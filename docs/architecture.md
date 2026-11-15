@@ -6,7 +6,7 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 
 | Path | Owner and purpose | State |
 | --- | --- | --- |
-| `apps/desktop/src/main.rs` | Initializes logging, GPUI Kit and the native window. | In source |
+| `apps/desktop/src/main.rs` | Initializes logging, GPUI Kit and the native window. Quits when the window closes. | In source |
 | `apps/desktop/src/workspace.rs` | Owns navigation and the active file selection. | In source |
 | `apps/desktop/src/workspace/overview.rs` | Renders scan controls and progress. | In source |
 | `apps/desktop/src/workspace/scan.rs` | Connects native folder selection and the background scan job to workspace state. | In source |
@@ -19,6 +19,7 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/workspace/results/inspector.rs` | Presents metadata and finding evidence for the selected row. | In source |
 | `crates/scan-engine/src/lib.rs` | Owns traversal, exclusions, file metadata and error reporting. | In source |
 | `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates. Its platform code revalidates file identity before and after reads. | In source |
+| `crates/scan-engine/src/file_types.rs` | Names a broad file type from the path extension, with an Other fallback. | In source |
 | `crates/scan-engine/tests` | Exercises deterministic fixture trees in temporary directories. | In source |
 | `crates/scan-store` | Owns the SQLite migration, transactional writer, and queries for scan history and file search. | In source |
 
@@ -48,5 +49,7 @@ The analyzer reads one equal-size candidate set at a time from SQLite. It sample
 The schema stores scan summaries and file records in separate tables. Each record has a native path key and a display path. Preserve Unix path bytes or Windows UTF-16 code units in the key so distinct filenames survive lossy display conversion. Store file timestamps as seconds and nanoseconds, including timestamps before the Unix epoch.
 
 The writer enables foreign keys on every connection and records each scan in one transaction. Completing or cancelling a scan commits its summary and available rows. Dropping an incomplete transaction rolls back its rows. History queries hide running scans. File search checks the entire saved scan for a literal path substring and folds ASCII case. File pages have a stable size order with the native key as a tiebreaker. Desktop queries run in the background with bundled SQLite through `rusqlite`.
+
+File-type totals are computed from the saved file rows when a scan opens. They take about 15 ms for 100,000 files, so no type column is stored.
 
 The v2 migration keeps existing scans and adds duplicate groups and membership. Older scans need a new scan to generate findings. Cancelling verification keeps groups completed before cancellation and marks verification incomplete.

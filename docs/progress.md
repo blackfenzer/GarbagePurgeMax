@@ -24,4 +24,4 @@
 
 ## Next development session
 
-Follow the [v0.1 release gates](tasks.md#close-before-v01). Windows CI passes. Next, run the Windows 11 desktop smoke test with `smoke_fixture` (deny read access to its `locked` folder by hand), then document the v0.1 release and demo. Run final platform smoke tests and the end-to-end benchmark against the integrated build.
+Follow the [v0.1 release gates](tasks.md#close-before-v01). Windows CI passes. The Windows 11 smoke test and mounted-volume selection are listed under [Needs testing](tasks.md#needs-testing) until a Windows machine is available. After they pass, capture the v0.1 screenshots and demo. Run final platform smoke tests and the end-to-end benchmark against the integrated build.

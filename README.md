@@ -24,7 +24,7 @@ cargo run --locked -p storage-clinic
 
 The workspace lockfile pins the resolved dependencies. On macOS, GPUI Kit 0.9.1 compiles its Metal shaders at runtime. This build used Apple’s Command Line Tools without full Xcode. If a Homebrew `rustup` install exposes `rustup` but `cargo` is missing from your shell, run `export PATH="$(dirname "$(rustup which cargo)"):$PATH"` before the commands above. Set `RUST_LOG` to change the log level.
 
-In the window, choose **Overview → Choose folder**. The dashboard shows scan progress and offers **Cancel scan**. **Scan Results** lists the indexed files in descending size order, 100 per page, and flags files of at least 1 GiB. Use **Search file paths** to search the full saved scan by filename or folder. Click a row or focus the table and use the arrow keys to inspect metadata. **Scan History** opens past scans, including partial results from cancelled scans.
+In the window, choose **Overview → Choose folder**. The dashboard shows scan progress and offers **Cancel scan**. **Scan Results** lists the indexed files in descending size order, 100 per page, flags files of at least 1 GiB, and totals files and logical size by type. Use **Search file paths** to search the full saved scan by filename or folder. Click a row or focus the table and use the arrow keys to inspect metadata. **Scan History** opens past scans, including partial results from cancelled scans.
 
 Use **Scan exclusions** on Overview to select files or folders to skip in future scans. After indexing, Storage Clinic checks same-size files for exact duplicates. Use **Duplicates only** in Scan Results to review matches and see their SHA-256 hashes in File Inspector. Reopen older scans for their indexed files, or run a new scan to add duplicate findings.
 
@@ -41,4 +41,20 @@ The app saves file paths and metadata locally under `~/Library/Application Suppo
 - [`docs/benchmarks.md`](docs/benchmarks.md) describes how to reproduce the traversal benchmark and interpret its results.
 - `references/` holds optional local clones of the research projects and is ignored by Git.
 
-The app shows the first scan error alongside the error counts. Logical bytes include hard-linked names. Duplicate verification counts distinct file identities. It reads file content to establish a match and checks identity and metadata around those reads. Native Windows build and GUI verification are pending.
+To generate the synthetic tree used for the desktop smoke test, run `cargo run --locked --release -p scan-engine --example smoke_fixture -- <new folder>`. On macOS, run `chmod 755 <folder>/locked` before deleting it.
+
+## v0.1 status and limits
+
+| Platform | Build and tests | Desktop smoke test |
+| --- | --- | --- |
+| macOS 27.2, Apple Silicon | Passed locally: rustfmt, strict Clippy, 33 Rust tests, and the schema tests | Passed on 120,023 generated files |
+| Windows x64 | Passed on GitHub Actions `windows-2022` | Needs testing on Windows 11 |
+
+On a 100,000-file tree, the release pipeline scanned, indexed, and verified duplicates in 3.2 s for mostly unique files and 8.1 s for a duplicate-heavy tree. Peak memory was about 16.5 MiB, review queries took under 47 ms, and cancellation returned within 14 ms. Traversal alone averaged 267,804 files/s. See [benchmarks](docs/benchmarks.md) for the method and the [architecture](docs/architecture.md) for the design.
+
+- Scans read files and never change them. Cleanup arrives in v0.3.
+- File types come from extensions only. Duplicates are exact byte matches. Similar images are planned for v0.2.
+- Logical sizes include every hard-linked name. Duplicate verification counts each file identity once. Physical space on disk is not estimated yet.
+- Each scan holds the database write lock until it finishes, so a second app instance cannot save a scan at the same time. The app quits when its window closes.
+- Older scans need a new scan to add duplicate findings. The app shows the first scan error alongside the error counts.
+- Release builds are not packaged, signed, or notarized yet. Run the app with `cargo run`.

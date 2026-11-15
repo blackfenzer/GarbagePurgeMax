@@ -25,9 +25,16 @@ The release flow is **Select Folder → Scan → Analyze → Inspect Results** o
 | --- | --- | --- |
 | 1 | [x] Add a file-type breakdown to the scan summary | Show counts and logical bytes for the current saved scan, with a fallback for files without a recognized extension. Keep categorization off the UI thread and cover partial and reopened scans. |
 | 2 | [x] Run the macOS desktop smoke test | Use a generated tree to verify picker cancel, cancel during traversal or duplicate verification, full-scan search beyond the first page, keyboard and mouse Inspector navigation, exclusions, duplicate evidence, and reopened history. Check folder and supported mounted-volume selection through the existing picker. |
-| 3 | [ ] Run native Windows x64 CI and the Windows 11 desktop smoke test | Link the locked app, pass the shared fixture suite, and repeat the macOS smoke scenarios using Windows paths and a disposable folder or test volume. Record the runner, Windows version, and any platform-specific limits. |
+| 3 | [ ] Run native Windows x64 CI and the Windows 11 desktop smoke test | Link the locked app, pass the shared fixture suite, and repeat the macOS smoke scenarios using Windows paths and a disposable folder or test volume. Record the runner, Windows version, and any platform-specific limits. CI passed on `windows-2022`. **Needs testing:** the Windows 11 smoke test, once a Windows machine is available. |
 | 4 | [x] Measure the end-to-end flow on 100,000+ files | Include SQLite indexing, duplicate-heavy and mostly unique inputs, search and paging during review, and a cancellation check. Record per-phase timing, peak process memory, and responsiveness separately from the traversal benchmark. Record warm and cold-cache observations where reproducible. |
-| 5 | [ ] Document the v0.1 release and portfolio demo | Update setup, platform limits and measured results. Capture screenshots and a short read-only workflow demo once both platforms pass. Record the build artifacts and link the architecture and benchmark evidence. |
+| 5 | [ ] Document the v0.1 release and portfolio demo | Update setup, platform limits and measured results. Capture screenshots and a short read-only workflow demo once both platforms pass. Record the build artifacts and link the architecture and benchmark evidence. Setup, limits, results, and evidence links are in the README. **Needs testing first:** screenshots and the demo wait for the Windows 11 smoke test. |
+
+### Needs testing
+
+These checks need hardware that is not available yet. Run them before tagging v0.1.
+
+- [ ] **Windows 11 x64 desktop smoke test.** Generate the tree with `cargo run --locked --release -p scan-engine --example smoke_fixture -- <new folder>`, deny read access to its `locked` folder in Properties → Security, and repeat the macOS checklist recorded in [progress](progress.md). Record the Windows version and any path or permission differences.
+- [ ] **Mounted-volume selection on macOS and Windows.** Choose a disk image or USB volume in the native picker and scan it.
 
 Run final release checks on the integrated build. If the desktop automation cannot launch the development executable, run the smoke test in an interactive OS session and record what passed.
 
