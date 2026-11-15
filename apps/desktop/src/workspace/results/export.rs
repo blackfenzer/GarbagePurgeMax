@@ -130,10 +130,13 @@ fn timestamp(time: Option<SystemTime>) -> String {
         .unwrap_or_default()
 }
 
-/// Quotes a CSV cell when needed. A leading `=`, `+`, `-`, or `@` gets an apostrophe so
+/// Quotes a CSV cell when needed. A cell whose first non-space character is `=`, `+`,
+/// `-`, or `@`, or that starts with a tab or carriage return, gets an apostrophe so
 /// spreadsheets show a file name instead of running it as a formula.
 fn csv_cell(value: &str) -> String {
-    let value = if value.starts_with(['=', '+', '-', '@']) {
+    let formula_like =
+        value.starts_with(['\t', '\r']) || value.trim_start().starts_with(['=', '+', '-', '@']);
+    let value = if formula_like {
         format!("'{value}")
     } else {
         value.to_string()
@@ -185,6 +188,9 @@ mod tests {
             empty.ends_with(",Empty files,0 bytes when scanned,completed"),
             "{empty}"
         );
+        assert_eq!(csv_cell(" \t=cmd()"), "' \t=cmd()");
+        assert_eq!(csv_cell("\tplain"), "'\tplain");
+        assert_eq!(csv_cell("report-1.txt"), "report-1.txt");
         let copy = lines.iter().find(|line| line.contains("copy.txt")).unwrap();
         assert!(copy.contains(",false,1,,,"), "{copy}");
         Ok(())
