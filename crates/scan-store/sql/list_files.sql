@@ -3,5 +3,5 @@ SELECT path_key, display_path, logical_bytes, created_unix_seconds,
 FROM files
 WHERE scan_id = :scan_id
   AND (:search = '' OR instr(lower(display_path), lower(:search)) > 0)
-ORDER BY logical_bytes DESC, path_key
-LIMIT :limit OFFSET :offset;
+  AND (:file_type = '' OR file_type(display_path) = :file_type)
+  AND (:modified_before IS NULL OR modified_unix_seconds < :modified_before)

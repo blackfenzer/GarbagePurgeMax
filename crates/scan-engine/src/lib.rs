@@ -13,7 +13,7 @@ mod similar_images;
 
 pub use cleanup_candidates::{CleanupCandidate, CleanupKind, OLD_DOWNLOAD_DAYS, cleanup_candidate};
 pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
-pub use file_types::{OTHER_FILE_TYPE, file_type};
+pub use file_types::{FILE_TYPES, OTHER_FILE_TYPE, file_type};
 pub use similar_images::{
     SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis, SimilarImageGroup, difference_hash,
     find_similar_images, is_hashable_image,

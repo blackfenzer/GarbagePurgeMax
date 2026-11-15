@@ -19,6 +19,9 @@
 - Similar-image detection for JPEG, PNG, GIF, WebP, BMP, and TIFF files using a difference hash, stored apart from exact duplicates.
 - A Review page with Exact duplicates and Similar images tabs, side-by-side previews, and the evidence for each match.
 - Review-only cleanup candidates for empty files, temporary files, incomplete downloads, installers, archives, and old downloads, each with its evidence.
+- CSV export of a saved scan, with formula-like cells defused for spreadsheets.
+- A Scan again button in Scan History.
+- File type and age filters and five sort orders in Scan Results.
 
 ### Fixed
 
@@ -39,5 +42,5 @@
 ### Needs testing
 
 - The Windows 11 desktop smoke test and mounted-volume selection.
-- The Review page's three tabs in the running app.
+- The Review page's three tabs, the Scan Results filters, Scan again, and Export CSV in the running app.
 - The similar-image threshold on real photos.

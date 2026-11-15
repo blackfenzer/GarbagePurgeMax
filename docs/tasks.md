@@ -44,7 +44,8 @@ Run final release checks on the integrated build. If the desktop automation cann
 - [x] Build Similar Images and Duplicate Review views with side-by-side previews, group details, and evidence. **Needs testing:** an interactive check of the Review page, and the similarity threshold on real photos.
 - [x] Add evidence-backed candidates for old downloads, installers, archives, known temporary files, and empty files. **Needs testing:** an interactive check of the Cleanup candidates tab.
 - [ ] Detect empty folders. Traversal records only regular files today, so this needs folder records in the scanner and store.
-- [ ] Add repeatable scan profiles, richer filters and sorting, and scan export. Preserve path, type, size, age, group, confidence, risk, status, and directory semantics where applicable.
+- [x] Add repeatable scans, richer filters and sorting, and scan export. Preserve path, type, size, age, group, confidence, risk, status, and directory semantics where applicable. Scan History repeats a scan with the current exclusions. Scan Results filters by type and age and sorts five ways. Export CSV keeps path, folder, type, size, timestamps, groups, cleanup rule, and status, and its column names state each finding's confidence. Risk is added with the risk tiers below. **Needs testing:** an interactive check of the filters, Scan again, and Export CSV.
+- [ ] Add named scan profiles with their own exclusions if Scan again proves too limited.
 - [ ] Add incremental scan caching. Reuse results only after revalidating file identity, size, and timestamps. Measure cold and warm scans, hashing throughput, CPU and I/O load, and cache effectiveness.
 - [ ] Add protected locations and conservative risk tiers. Keep unknown, personal, development, system, and cloud-placeholder data in review-only states.
 

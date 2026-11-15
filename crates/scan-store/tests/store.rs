@@ -4,7 +4,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use scan_engine::{CleanupKind, FileRecord, ScanProgress, ScanSummary, SimilarImage};
-use scan_store::{DuplicateEvidence, FileTypeTotal, ReviewGroup, ScanStore, SimilarImageEvidence};
+use scan_store::{
+    DuplicateEvidence, FileFilter, FileSort, FileTypeTotal, ReviewGroup, ScanStore,
+    SimilarImageEvidence,
+};
 
 #[test]
 fn restores_partial_scan_metadata_and_paginates_literal_search()
@@ -417,6 +420,56 @@ fn lists_cleanup_candidates_largest_first() -> Result<(), Box<dyn std::error::Er
             CleanupKind::EmptyFile
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn filters_by_type_and_age_and_sorts_pages() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(directory.path(), 1_000)?;
+    let day = Duration::from_secs(24 * 60 * 60);
+    for (name, bytes, age_days) in [
+        ("b-photo.jpg", 30, 400),
+        ("A-photo.png", 10, 5),
+        ("notes.txt", 20, 400),
+        ("clip.mov", 40, 1),
+    ] {
+        writer.insert_file(&FileRecord {
+            modified: Some(UNIX_EPOCH + day * (1_000 - age_days)),
+            ..file(name, bytes)
+        })?;
+    }
+    let scan = writer.finish(&summary(4, false), 0)?;
+    let names = |filter: FileFilter| -> Result<Vec<_>, rusqlite::Error> {
+        Ok(store
+            .filtered_files(scan.id, &filter, 10, 0)?
+            .into_iter()
+            .map(|file| file.path.display().to_string())
+            .collect())
+    };
+
+    let images = FileFilter {
+        file_type: Some("Images"),
+        ..FileFilter::default()
+    };
+    assert_eq!(names(images.clone())?, ["b-photo.jpg", "A-photo.png"]);
+    let by_name = FileFilter {
+        sort: FileSort::Name,
+        ..images
+    };
+    assert_eq!(names(by_name)?, ["A-photo.png", "b-photo.jpg"]);
+    let older_than_a_year = FileFilter {
+        modified_before: Some(UNIX_EPOCH + day * (1_000 - 365)),
+        sort: FileSort::Smallest,
+        ..FileFilter::default()
+    };
+    assert_eq!(names(older_than_a_year)?, ["notes.txt", "b-photo.jpg"]);
+    let newest = FileFilter {
+        sort: FileSort::Newest,
+        ..FileFilter::default()
+    };
+    assert_eq!(names(newest)?[0], "clip.mov");
     Ok(())
 }
 

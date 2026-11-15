@@ -5,6 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, named_params, params,
     types::Type,
@@ -38,6 +39,30 @@ const LIST_SIMILAR_IMAGE_GROUP_FILES: &str =
 pub struct DuplicateEvidence {
     pub file_count: u64,
     pub hash: [u8; 32],
+}
+
+/// Order for file pages. Ties fall back to largest first, then native path.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileSort {
+    #[default]
+    Largest,
+    Smallest,
+    Newest,
+    Oldest,
+    Name,
+}
+
+/// Narrows a file page. The default matches every file, largest first.
+#[derive(Clone, Debug, Default)]
+pub struct FileFilter {
+    /// Literal, case-insensitive path substring.
+    pub search: String,
+    /// One of `scan_engine::FILE_TYPES`.
+    pub file_type: Option<&'static str>,
+    /// Only files last modified before this time.
+    pub modified_before: Option<SystemTime>,
+    pub sort: FileSort,
+    pub duplicates_only: bool,
 }
 
 /// A duplicate or similar-image group, summarized for the review list.
@@ -97,6 +122,13 @@ impl ScanStore {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        // Lets file queries filter by the same type names the scan summary shows.
+        connection.create_scalar_function(
+            "file_type",
+            1,
+            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            |context| Ok(file_type(Path::new(&context.get::<String>(0)?))),
+        )?;
         let version = schema_version(&connection)?;
         if (0..SCHEMA_VERSION).contains(&version) {
             let transaction =
@@ -204,7 +236,11 @@ impl ScanStore {
         limit: u32,
         offset: u64,
     ) -> rusqlite::Result<Vec<FileRecord>> {
-        self.file_page(LIST_FILES, scan_id, search, limit, offset)
+        let filter = FileFilter {
+            search: search.into(),
+            ..FileFilter::default()
+        };
+        self.filtered_files(scan_id, &filter, limit, offset)
     }
 
     pub fn duplicate_files(
@@ -214,7 +250,57 @@ impl ScanStore {
         limit: u32,
         offset: u64,
     ) -> rusqlite::Result<Vec<FileRecord>> {
-        self.file_page(LIST_DUPLICATE_FILES, scan_id, search, limit, offset)
+        let filter = FileFilter {
+            search: search.into(),
+            duplicates_only: true,
+            ..FileFilter::default()
+        };
+        self.filtered_files(scan_id, &filter, limit, offset)
+    }
+
+    // ponytail: filters and non-size sorts scan the whole saved index per page (tens of
+    // milliseconds at 100,000 files). Add indexes or a stored type column if this shows up.
+    pub fn filtered_files(
+        &self,
+        scan_id: i64,
+        filter: &FileFilter,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<FileRecord>> {
+        let query = if filter.duplicates_only {
+            LIST_DUPLICATE_FILES
+        } else {
+            LIST_FILES
+        };
+        let modified_before = filter
+            .modified_before
+            .map(|time| time_parts(Some(time)).map(|(seconds, _)| seconds))
+            .transpose()?
+            .flatten();
+        // Result-column positions (3 = size, 6 = modified, 2 = display path, 1 = native key)
+        // keep each order index-friendly in both queries. Every string here is a constant.
+        let order = match filter.sort {
+            FileSort::Largest => "3 DESC, 1",
+            FileSort::Smallest => "3, 1",
+            FileSort::Newest => "6 DESC, 3 DESC, 1",
+            FileSort::Oldest => "6, 3 DESC, 1",
+            FileSort::Name => "2 COLLATE NOCASE, 3 DESC, 1",
+        };
+        let query = format!("{query}ORDER BY {order}\nLIMIT :limit OFFSET :offset");
+        let mut statement = self.0.prepare_cached(&query)?;
+        statement
+            .query_map(
+                named_params! {
+                    ":scan_id": scan_id,
+                    ":search": filter.search,
+                    ":file_type": filter.file_type.unwrap_or(""),
+                    ":modified_before": modified_before,
+                    ":limit": limit,
+                    ":offset": sqlite_integer(offset)?
+                },
+                file_record,
+            )?
+            .collect()
     }
 
     pub fn duplicate_evidence(
@@ -357,7 +443,7 @@ impl ScanStore {
         scanned_at: SystemTime,
     ) -> rusqlite::Result<Vec<(FileRecord, CleanupCandidate)>> {
         Ok(self
-            .file_page(LIST_FILES, scan_id, "", u32::MAX, 0)?
+            .filtered_files(scan_id, &FileFilter::default(), u32::MAX, 0)?
             .into_iter()
             .filter_map(|file| cleanup_candidate(&file, scanned_at).map(|found| (file, found)))
             .collect())
@@ -389,28 +475,6 @@ impl ScanStore {
                 .then_with(|| left.file_type.cmp(right.file_type))
         });
         Ok(totals)
-    }
-
-    fn file_page(
-        &self,
-        query: &str,
-        scan_id: i64,
-        search: &str,
-        limit: u32,
-        offset: u64,
-    ) -> rusqlite::Result<Vec<FileRecord>> {
-        let mut statement = self.0.prepare_cached(query)?;
-        statement
-            .query_map(
-                named_params! {
-                    ":scan_id": scan_id,
-                    ":search": search,
-                    ":limit": limit,
-                    ":offset": sqlite_integer(offset)?
-                },
-                file_record,
-            )?
-            .collect()
     }
 }
 

@@ -4,5 +4,5 @@ FROM duplicate_members
 JOIN files USING (scan_id, path_key)
 WHERE duplicate_members.scan_id = :scan_id
   AND (:search = '' OR instr(lower(display_path), lower(:search)) > 0)
-ORDER BY duplicate_members.logical_bytes DESC, duplicate_members.path_key
-LIMIT :limit OFFSET :offset;
+  AND (:file_type = '' OR file_type(display_path) = :file_type)
+  AND (:modified_before IS NULL OR modified_unix_seconds < :modified_before)

@@ -71,6 +71,9 @@ impl Results {
     }
 
     pub(super) fn load_page(&mut self, offset: u64, debounce: bool, cx: &mut Context<Workspace>) {
+        // Read the controls before borrowing the saved page mutably.
+        let Some(saved) = &self.saved else { return };
+        let filter = self.file_filter(&saved.scan, saved.duplicates_only, cx);
         let Some(saved) = &mut self.saved else { return };
         saved.request.take();
         saved.offset = offset;
@@ -80,8 +83,6 @@ impl Results {
         saved.evidence.clear();
         saved.has_next = false;
         let scan_id = saved.scan.id;
-        let duplicates_only = saved.duplicates_only;
-        let query = self.input.read(cx).value().to_string();
         let executor = cx.background_executor().clone();
         saved.request = Some(cx.spawn(async move |workspace, cx| {
             if debounce {
@@ -90,12 +91,9 @@ impl Results {
             let result = cx
                 .background_spawn(async move {
                     let store = storage::open()?;
-                    let mut files = if duplicates_only {
-                        store.duplicate_files(scan_id, &query, PAGE_SIZE + 1, offset)
-                    } else {
-                        store.files(scan_id, &query, PAGE_SIZE + 1, offset)
-                    }
-                    .map_err(std::io::Error::other)?;
+                    let mut files = store
+                        .filtered_files(scan_id, &filter, PAGE_SIZE + 1, offset)
+                        .map_err(std::io::Error::other)?;
                     let has_next = files.len() > PAGE_SIZE as usize;
                     files.truncate(PAGE_SIZE as usize);
                     let evidence = store

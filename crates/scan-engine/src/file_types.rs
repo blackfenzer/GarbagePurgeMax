@@ -3,6 +3,18 @@ use std::path::Path;
 /// Shown for files whose extension is missing or not in the table below.
 pub const OTHER_FILE_TYPE: &str = "Other";
 
+/// Every name `file_type` can return, in display order.
+pub const FILE_TYPES: [&str; 8] = [
+    "Images",
+    "Video",
+    "Audio",
+    "Documents",
+    "Archives & disk images",
+    "Apps & installers",
+    "Code & data",
+    OTHER_FILE_TYPE,
+];
+
 /// Names a broad file type from the path extension alone. File contents are not read,
 /// so a renamed file is reported by its new extension.
 pub fn file_type(path: &Path) -> &'static str {

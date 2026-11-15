@@ -10,6 +10,8 @@ class SchemaTests(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
+        # The app registers the scanner's type names; the schema tests only need the hook.
+        self.db.create_function("file_type", 1, lambda path: "Other", deterministic=True)
         schema = "\n".join(
             (SQL / migration).read_text(encoding="utf-8")
             for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql")
@@ -39,8 +41,13 @@ class SchemaTests(unittest.TestCase):
 
     def list_files(self, scan, search="", limit=10, offset=0):
         query = (SQL / "list_files.sql").read_text(encoding="utf-8")
+        query += "ORDER BY 3 DESC, 1\nLIMIT :limit OFFSET :offset"
         return self.db.execute(
-            query, {"scan_id": scan, "search": search, "limit": limit, "offset": offset}
+            query,
+            {
+                "scan_id": scan, "search": search, "limit": limit, "offset": offset,
+                "file_type": "", "modified_before": None,
+            },
         ).fetchall()
 
     def test_history_includes_cancelled_scans_and_excludes_in_progress_scans(self):

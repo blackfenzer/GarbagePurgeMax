@@ -4,19 +4,41 @@ mod inspector;
 mod saved;
 
 use gpui_kit::base::StyledExt as _;
+use std::time::{Duration, UNIX_EPOCH};
+
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _,
     button::Button,
     input::{Input, InputEvent, InputState},
+    searchable_list::SearchableVec,
+    select::{Select, SelectEvent, SelectState},
     table::{DataTable, TableEvent, TableState},
 };
 use gpui_kit::{
-    AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _, Subscription, Window,
-    div, px,
+    App, AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _, Subscription,
+    Window, div, px,
 };
 
 use super::Workspace;
-use scan_engine::ScanProgress;
+use scan_engine::{FILE_TYPES, ScanProgress};
+use scan_store::{FileFilter, FileSort};
+
+type Options = SelectState<SearchableVec<&'static str>>;
+
+const ALL_TYPES: &str = "All types";
+/// Ages are measured from the scan's start, like cleanup candidates.
+const AGE_OPTIONS: [(&str, Option<u64>); 3] = [
+    ("Any age", None),
+    ("Older than 30 days", Some(30)),
+    ("Older than 1 year", Some(365)),
+];
+const SORT_OPTIONS: [(&str, FileSort); 5] = [
+    ("Largest first", FileSort::Largest),
+    ("Smallest first", FileSort::Smallest),
+    ("Newest first", FileSort::Newest),
+    ("Oldest first", FileSort::Oldest),
+    ("Name", FileSort::Name),
+];
 
 use super::scan::{LARGE_FILE_BYTES, ScanReport, format_bytes};
 use file_table::FileRows;
@@ -58,7 +80,10 @@ pub(super) struct Results {
     input: Entity<InputState>,
     table: Entity<TableState<FileRows>>,
     saved: Option<SavedResults>,
-    _subscriptions: [Subscription; 2],
+    type_filter: Entity<Options>,
+    age_filter: Entity<Options>,
+    sort_order: Entity<Options>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Results {
@@ -94,12 +119,88 @@ impl Results {
             }
         });
 
+        let options =
+            |labels: Vec<&'static str>, window: &mut Window, cx: &mut Context<Workspace>| {
+                cx.new(|cx| {
+                    SelectState::new(
+                        SearchableVec::new(labels),
+                        Some(IndexPath::new(0)),
+                        window,
+                        cx,
+                    )
+                })
+            };
+        let type_filter = options(
+            std::iter::once(ALL_TYPES).chain(FILE_TYPES).collect(),
+            window,
+            cx,
+        );
+        let age_filter = options(AGE_OPTIONS.map(|(label, _)| label).to_vec(), window, cx);
+        let sort_order = options(SORT_OPTIONS.map(|(label, _)| label).to_vec(), window, cx);
+        let mut subscriptions = vec![search, selection];
+        for state in [&type_filter, &age_filter, &sort_order] {
+            subscriptions.push(cx.subscribe(
+                state,
+                |workspace, _, _: &SelectEvent<SearchableVec<&'static str>>, cx| {
+                    if workspace.results.saved.is_some() {
+                        workspace.results.load_page(0, false, cx);
+                    }
+                },
+            ));
+        }
+
         Self {
             input,
             table,
             saved: None,
-            _subscriptions: [search, selection],
+            type_filter,
+            age_filter,
+            sort_order,
+            _subscriptions: subscriptions,
         }
+    }
+
+    /// The search box, dropdowns, and Duplicates only toggle as a store query.
+    fn file_filter(
+        &self,
+        scan: &scan_store::SavedScan,
+        duplicates_only: bool,
+        cx: &App,
+    ) -> FileFilter {
+        let row = |state: &Entity<Options>| {
+            state
+                .read(cx)
+                .selected_index(cx)
+                .map_or(0, |index| index.row)
+        };
+        let scanned_at =
+            UNIX_EPOCH + Duration::from_millis(u64::try_from(scan.started_unix_ms).unwrap_or(0));
+        let age_days = AGE_OPTIONS
+            .get(row(&self.age_filter))
+            .and_then(|(_, days)| *days);
+        FileFilter {
+            search: self.input.read(cx).value().to_string(),
+            file_type: row(&self.type_filter)
+                .checked_sub(1)
+                .and_then(|index| FILE_TYPES.get(index).copied()),
+            modified_before: age_days
+                .map(|days| scanned_at - Duration::from_secs(days * 24 * 60 * 60)),
+            sort: SORT_OPTIONS
+                .get(row(&self.sort_order))
+                .map_or(FileSort::Largest, |(_, sort)| *sort),
+            duplicates_only,
+        }
+    }
+
+    fn sort_label(&self, cx: &App) -> &'static str {
+        let row = self
+            .sort_order
+            .read(cx)
+            .selected_index(cx)
+            .map_or(0, |index| index.row);
+        SORT_OPTIONS
+            .get(row)
+            .map_or(SORT_OPTIONS[0].0, |(label, _)| label)
     }
 
     pub(super) fn show_scan(&mut self, report: &ScanReport, cx: &mut Context<Workspace>) {
@@ -150,9 +251,10 @@ impl Results {
                     String::new()
                 } else {
                     format!(
-                        "Files {}–{} · Largest first",
+                        "Files {}–{} · {}",
                         saved.offset + 1,
-                        saved.offset + saved.files.len() as u64
+                        saved.offset + saved.files.len() as u64,
+                        self.sort_label(cx)
                     )
                 };
                 let detail = selected
@@ -360,6 +462,32 @@ impl Results {
                                     }),
                             ),
                     )
+                    .children(self.saved.as_ref().map(|_| {
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                div().w(px(190.)).child(
+                                    Select::new(&self.type_filter)
+                                        .small()
+                                        .accessibility_label("File type"),
+                                ),
+                            )
+                            .child(
+                                div().w(px(170.)).child(
+                                    Select::new(&self.age_filter)
+                                        .small()
+                                        .accessibility_label("Last modified"),
+                                ),
+                            )
+                            .child(
+                                div().w(px(150.)).child(
+                                    Select::new(&self.sort_order)
+                                        .small()
+                                        .accessibility_label("Sort order"),
+                                ),
+                            )
+                    }))
                     .children(
                         (!scope.is_empty()).then(|| div().text_sm().text_color(muted).child(scope)),
                     )

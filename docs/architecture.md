@@ -17,6 +17,7 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/workspace/storage.rs` | Resolves the app data directory and keeps it out of scans. | In source |
 | `apps/desktop/src/workspace/exclusions.rs` | Stores excluded paths and resolves them relative to the selected scan root. | In source |
 | `apps/desktop/src/workspace/review.rs` | Lists exact-duplicate and similar-image groups for the open scan in separate tabs, with side-by-side previews and evidence. | In source |
+| `apps/desktop/src/workspace/results/export.rs` | Writes a saved scan to CSV through a temporary file and defuses cells a spreadsheet would run as formulas. | In source |
 | `apps/desktop/src/workspace/results/inspector.rs` | Presents metadata and finding evidence for the selected row. | In source |
 | `crates/scan-engine/src/lib.rs` | Owns traversal, exclusions, file metadata and error reporting. | In source |
 | `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates. Its platform code revalidates file identity before and after reads. | In source |
@@ -56,6 +57,8 @@ The writer enables foreign keys on every connection and records each scan in one
 File-type totals are computed from the saved file rows when a scan opens. They take about 15 ms for 100,000 files, so no type column is stored.
 
 After exact duplicates are verified, the scan decodes JPEG, PNG, GIF, WebP, BMP, and TIFF files, hashes them, and saves similar-image groups in the same scan transaction. Each image joins the closest earlier reference within 6 bits or starts a new group, so every saved distance is measured to the reference. The v3 migration stores these groups in their own tables, apart from byte-verified duplicates. Byte-identical images appear in both views, labelled as an exact duplicate in one and a distance-0 similar image in the other. Decode failures are counted on the scan. Previews are loaded by GPUI's image element off the UI thread. See [image similarity](image-similarity.md) for how the hash and threshold were chosen.
+
+Each store connection registers the engine's `file_type` as a SQLite function, so file pages filter by the same type names the scan summary shows. Sorting appends one of five constant `ORDER BY` clauses by result-column position, so the default largest-first order keeps using the size index. Type and age filters and other sorts read the whole saved index for each page.
 
 Cleanup candidates are not stored. The store applies the engine's rules to a saved scan's file rows when the Review tab opens, measuring age from the scan's start time. Each file gets the first matching rule: empty file, known temporary name, incomplete download, installer, archive, then a file in a `Downloads` folder unmodified for 90 days. Changing a rule therefore needs no migration, and older scans gain the new candidates.
 
