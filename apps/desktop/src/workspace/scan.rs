@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, PathPromptOptions};
-use scan_engine::{FileRecord, ScanProgress, ScanSummary, scan_directory};
-use scan_store::SavedScan;
+use scan_engine::{FileRecord, ScanProgress, ScanSummary, scan_directory, verify_duplicate_group};
+use scan_store::{SavedScan, ScanWriter};
 
-use super::{Page, Workspace, storage};
+use super::{Page, Workspace, exclusions, storage};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 const PREVIEW_LIMIT: usize = 100;
@@ -25,8 +25,15 @@ pub(super) struct ScanSession {
 pub(super) struct ActiveScan {
     pub root: PathBuf,
     pub progress: ScanProgress,
+    pub analyzing: bool,
     pub cancelling: bool,
     cancel: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ScanActivity {
+    progress: ScanProgress,
+    analyzing: bool,
 }
 
 impl Drop for ActiveScan {
@@ -46,7 +53,8 @@ pub(super) struct ScanReport {
 
 impl Workspace {
     pub(super) fn choose_scan_folder(&mut self, cx: &mut Context<Self>) {
-        if self.scan.choosing_folder || self.scan.active.is_some() {
+        if self.scan.choosing_folder || self.scan.active.is_some() || self.exclusion_settings_busy()
+        {
             return;
         }
         self.scan.choosing_folder = true;
@@ -96,11 +104,12 @@ impl Workspace {
         self.scan.active = Some(ActiveScan {
             root: root.clone(),
             progress: ScanProgress::default(),
+            analyzing: false,
             cancelling: false,
             cancel: Arc::clone(&cancel),
         });
 
-        let latest = Arc::new(Mutex::new(ScanProgress::default()));
+        let latest = Arc::new(Mutex::new(ScanActivity::default()));
         let worker_progress = Arc::clone(&latest);
         let (send, receive) = mpsc::sync_channel(1);
         cx.background_spawn(async move {
@@ -141,13 +150,15 @@ impl Workspace {
                     break;
                 }
 
-                let progress = *latest.lock().expect("scan progress lock");
+                let activity = *latest.lock().expect("scan progress lock");
                 if workspace
                     .update(cx, |workspace, cx| {
                         if let Some(active) = &mut workspace.scan.active
-                            && active.progress != progress
+                            && (active.progress != activity.progress
+                                || active.analyzing != activity.analyzing)
                         {
-                            active.progress = progress;
+                            active.progress = activity.progress;
+                            active.analyzing = activity.analyzing;
                             cx.notify();
                         }
                     })
@@ -166,12 +177,13 @@ fn inspect_and_save(
     root: PathBuf,
     database_path: io::Result<PathBuf>,
     cancel: &AtomicBool,
-    progress_changed: impl FnMut(ScanProgress),
+    mut progress_changed: impl FnMut(ScanActivity),
 ) -> io::Result<ScanReport> {
     let (mut database, exclusions) = match database_path {
         Ok(path) => {
-            let exclusions = storage::scan_exclusions(&root, &path)?;
-            (storage::open_at(&path), exclusions)
+            let mut paths = storage::scan_exclusions(&root, &path)?;
+            paths.extend(exclusions::for_scan(&root, &path)?);
+            (storage::open_at(&path), paths)
         }
         Err(error) => (Err(error), Vec::new()),
     };
@@ -192,7 +204,12 @@ fn inspect_and_save(
         &exclusions,
         cancel,
         LARGE_FILE_BYTES,
-        progress_changed,
+        |progress| {
+            progress_changed(ScanActivity {
+                progress,
+                analyzing: false,
+            })
+        },
         |file| {
             if let Some(current) = &mut writer
                 && let Err(error) = current.insert_file(file)
@@ -203,14 +220,70 @@ fn inspect_and_save(
             }
         },
     )?;
-    if let Some(writer) = writer {
-        match writer.finish(&report.summary, report.large_file_count) {
+    if let Some(mut writer) = writer {
+        let verification = if report.summary.cancelled {
+            Ok(())
+        } else {
+            progress_changed(ScanActivity {
+                progress: report.summary.progress,
+                analyzing: true,
+            });
+            verify_indexed_duplicates(&mut writer, &mut report.summary, cancel)
+        };
+        let saved = verification.and_then(|()| {
+            writer
+                .finish(&report.summary, report.large_file_count)
+                .map_err(io::Error::other)
+        });
+        match saved {
             Ok(saved) => report.saved = Some(saved),
             Err(error) => save_error = Some(error.to_string()),
         }
     }
     report.save_error = save_error;
     Ok(report)
+}
+
+fn verify_indexed_duplicates(
+    writer: &mut ScanWriter<'_>,
+    summary: &mut ScanSummary,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    let mut after_size = None;
+    let mut error_count = 0_u64;
+    while !cancel.load(Ordering::Relaxed) {
+        let files = writer
+            .next_duplicate_candidates(after_size)
+            .map_err(io::Error::other)?;
+        let Some(first) = files.first() else {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            return writer
+                .mark_duplicates_analyzed(error_count)
+                .map_err(io::Error::other);
+        };
+        after_size = Some(first.logical_bytes);
+        let analysis = verify_duplicate_group(&files, cancel);
+        if analysis.cancelled || cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        error_count = error_count.saturating_add(analysis.errors);
+        if summary.first_error.is_none() {
+            summary.first_error = analysis.first_error;
+        }
+        for group in analysis.groups {
+            if cancel.load(Ordering::Relaxed) {
+                summary.cancelled = true;
+                return Ok(());
+            }
+            writer
+                .insert_duplicate_group(&group.paths, &group.hash)
+                .map_err(io::Error::other)?;
+        }
+    }
+    summary.cancelled = true;
+    Ok(())
 }
 
 fn inspect_folder(
@@ -357,6 +430,79 @@ mod tests {
         assert!(report.saved.is_none());
         assert_eq!(report.save_error.as_deref(), Some("no storage"));
         assert_eq!(report.largest_files.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn persists_exact_duplicate_findings_for_the_inspector() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let database = root.path().join("app-data/scans.sqlite3");
+        for (name, contents) in [
+            ("original.txt", "same"),
+            ("copy.txt", "same"),
+            ("distinct.txt", "else"),
+        ] {
+            std::fs::write(root.path().join(name), contents)?;
+        }
+
+        let report = inspect_and_save(
+            root.path().into(),
+            Ok(database.clone()),
+            &AtomicBool::new(false),
+            |_| {},
+        )?;
+        assert!(report.save_error.is_none(), "{:?}", report.save_error);
+        let saved = report.saved.unwrap();
+        assert!(saved.duplicates_analyzed);
+        assert_eq!(saved.duplicate_group_count, 1);
+        assert_eq!(saved.duplicate_error_count, 0);
+
+        let store = storage::open_at(&database)?;
+        let files = store
+            .duplicate_files(saved.id, "", 10, 0)
+            .map_err(io::Error::other)?;
+        assert_eq!(files.len(), 2);
+        let evidence = store
+            .duplicate_evidence(saved.id, &files)
+            .map_err(io::Error::other)?;
+        let original = &evidence[&root.path().join("original.txt")];
+        let copy = &evidence[&root.path().join("copy.txt")];
+        assert_eq!(original.file_count, 2);
+        assert_eq!(original.hash, copy.hash);
+        assert!(!evidence.contains_key(&root.path().join("distinct.txt")));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelling_duplicate_verification_keeps_the_file_index() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let database = root.path().join("app-data/scans.sqlite3");
+        std::fs::write(root.path().join("one"), "same")?;
+        std::fs::write(root.path().join("two"), "same")?;
+        let cancel = AtomicBool::new(false);
+        let report = inspect_and_save(
+            root.path().into(),
+            Ok(database.clone()),
+            &cancel,
+            |activity| {
+                if activity.analyzing {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        )?;
+        assert!(report.summary.cancelled);
+        let saved = report.saved.unwrap();
+        assert!(saved.cancelled);
+        assert!(!saved.duplicates_analyzed);
+        assert_eq!(saved.duplicate_group_count, 0);
+        let store = storage::open_at(&database)?;
+        assert_eq!(
+            store
+                .files(saved.id, "", 10, 0)
+                .map_err(io::Error::other)?
+                .len(),
+            2
+        );
         Ok(())
     }
 }

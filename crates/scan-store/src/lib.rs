@@ -1,20 +1,31 @@
 mod encoding;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rusqlite::{
-    Connection, Row, Transaction, TransactionBehavior, named_params, params, types::Type,
+    Connection, OptionalExtension, Row, Transaction, TransactionBehavior, named_params, params,
+    types::Type,
 };
 use scan_engine::{FileRecord, ScanProgress, ScanSummary};
 
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
-const SCHEMA: &str = include_str!("../sql/001_initial.sql");
-const SCHEMA_VERSION: i64 = 1;
+const INITIAL_SCHEMA: &str = include_str!("../sql/001_initial.sql");
+const EXACT_DUPLICATES_SCHEMA: &str = include_str!("../sql/002_exact_duplicates.sql");
+const SCHEMA_VERSION: i64 = 2;
 const LIST_SCANS: &str = include_str!("../sql/list_scans.sql");
 const LIST_FILES: &str = include_str!("../sql/list_files.sql");
+const DUPLICATE_CANDIDATES: &str = include_str!("../sql/duplicate_candidates.sql");
+const LIST_DUPLICATE_FILES: &str = include_str!("../sql/list_duplicate_files.sql");
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DuplicateEvidence {
+    pub file_count: u64,
+    pub hash: [u8; 32],
+}
 
 #[derive(Clone, Debug)]
 pub struct SavedScan {
@@ -26,6 +37,9 @@ pub struct SavedScan {
     pub first_error: Option<String>,
     pub large_file_count: u64,
     pub large_file_threshold: u64,
+    pub duplicates_analyzed: bool,
+    pub duplicate_group_count: u64,
+    pub duplicate_error_count: u64,
 }
 
 pub struct ScanStore(Connection);
@@ -36,12 +50,16 @@ impl ScanStore {
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let version = schema_version(&connection)?;
-        if version == 0 {
+        if matches!(version, 0 | 1) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             // Another app instance may have migrated while this connection waited.
             match schema_version(&transaction)? {
-                0 => transaction.execute_batch(SCHEMA)?,
+                0 => {
+                    transaction.execute_batch(INITIAL_SCHEMA)?;
+                    transaction.execute_batch(EXACT_DUPLICATES_SCHEMA)?;
+                }
+                1 => transaction.execute_batch(EXACT_DUPLICATES_SCHEMA)?,
                 SCHEMA_VERSION => {}
                 version => return Err(incompatible_schema(version)),
             }
@@ -75,6 +93,9 @@ impl ScanStore {
             first_error: None,
             large_file_count: 0,
             large_file_threshold,
+            duplicates_analyzed: false,
+            duplicate_group_count: 0,
+            duplicate_error_count: 0,
         };
         Ok(ScanWriter { transaction, scan })
     }
@@ -100,6 +121,9 @@ impl ScanStore {
                         large_file_count: unsigned_integer(row, 8)?,
                         large_file_threshold: unsigned_integer(row, 9)?,
                         first_error: row.get(12)?,
+                        duplicates_analyzed: row.get(13)?,
+                        duplicate_group_count: unsigned_integer(row, 14)?,
+                        duplicate_error_count: unsigned_integer(row, 15)?,
                     })
                 },
             )?
@@ -113,19 +137,67 @@ impl ScanStore {
         limit: u32,
         offset: u64,
     ) -> rusqlite::Result<Vec<FileRecord>> {
-        let mut statement = self.0.prepare(LIST_FILES)?;
-        statement.query_map(
-            named_params! {":scan_id": scan_id, ":search": search, ":limit": limit, ":offset": sqlite_integer(offset)?},
-            |row| {
-                Ok(FileRecord {
-                    path: decode_path(row, 0)?,
-                    logical_bytes: unsigned_integer(row, 2)?,
-                    created: datetime(row, 3)?,
-                    modified: datetime(row, 5)?,
-                    read_only: row.get(7)?,
+        self.file_page(LIST_FILES, scan_id, search, limit, offset)
+    }
+
+    pub fn duplicate_files(
+        &self,
+        scan_id: i64,
+        search: &str,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<FileRecord>> {
+        self.file_page(LIST_DUPLICATE_FILES, scan_id, search, limit, offset)
+    }
+
+    pub fn duplicate_evidence(
+        &self,
+        scan_id: i64,
+        files: &[FileRecord],
+    ) -> rusqlite::Result<HashMap<PathBuf, DuplicateEvidence>> {
+        let mut evidence = HashMap::new();
+        let mut statement = self.0.prepare_cached(
+            "SELECT file_count, hash
+             FROM duplicate_members
+             JOIN duplicate_groups USING (scan_id, group_id)
+             WHERE duplicate_members.scan_id = ?1 AND path_key = ?2",
+        )?;
+        for file in files {
+            let entry = statement
+                .query_row(params![scan_id, encode_path(&file.path)], |row| {
+                    Ok(DuplicateEvidence {
+                        file_count: unsigned_integer(row, 0)?,
+                        hash: row.get(1)?,
+                    })
                 })
-            },
-        )?.collect()
+                .optional()?;
+            if let Some(entry) = entry {
+                evidence.insert(file.path.clone(), entry);
+            }
+        }
+        Ok(evidence)
+    }
+
+    fn file_page(
+        &self,
+        query: &str,
+        scan_id: i64,
+        search: &str,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<FileRecord>> {
+        let mut statement = self.0.prepare_cached(query)?;
+        statement
+            .query_map(
+                named_params! {
+                    ":scan_id": scan_id,
+                    ":search": search,
+                    ":limit": limit,
+                    ":offset": sqlite_integer(offset)?
+                },
+                file_record,
+            )?
+            .collect()
     }
 }
 
@@ -159,6 +231,61 @@ impl ScanWriter<'_> {
         Ok(())
     }
 
+    pub fn next_duplicate_candidates(
+        &self,
+        after_size: Option<u64>,
+    ) -> rusqlite::Result<Vec<FileRecord>> {
+        let after_size = after_size.map_or(-1, |size| i64::try_from(size).unwrap_or(i64::MAX));
+        let mut statement = self.transaction.prepare_cached(DUPLICATE_CANDIDATES)?;
+        statement
+            .query_map(params![self.scan.id, after_size], file_record)?
+            .collect()
+    }
+
+    pub fn insert_duplicate_group(
+        &mut self,
+        paths: &[PathBuf],
+        hash: &[u8; 32],
+    ) -> rusqlite::Result<()> {
+        let group_id = self.scan.duplicate_group_count + 1;
+        let group_key = sqlite_integer(group_id)?;
+        let savepoint = self.transaction.savepoint()?;
+        savepoint.execute(
+            "INSERT INTO duplicate_groups (scan_id, group_id, file_count, hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                self.scan.id,
+                group_key,
+                sqlite_integer(paths.len() as u64)?,
+                hash.as_slice(),
+            ],
+        )?;
+        {
+            let mut statement = savepoint.prepare_cached(
+                "INSERT INTO duplicate_members (scan_id, path_key, group_id, logical_bytes)
+                 VALUES (?1, ?2, ?3, (
+                     SELECT logical_bytes FROM files WHERE scan_id = ?1 AND path_key = ?2
+                 ))",
+            )?;
+            for path in paths {
+                statement.execute(params![self.scan.id, encode_path(path), group_key])?;
+            }
+        }
+        savepoint.commit()?;
+        self.scan.duplicate_group_count = group_id;
+        Ok(())
+    }
+
+    pub fn mark_duplicates_analyzed(&mut self, error_count: u64) -> rusqlite::Result<()> {
+        self.transaction.execute(
+            "UPDATE scans SET duplicates_analyzed = 1, duplicate_error_count = ?1 WHERE id = ?2",
+            params![sqlite_integer(error_count)?, self.scan.id],
+        )?;
+        self.scan.duplicates_analyzed = true;
+        self.scan.duplicate_error_count = error_count;
+        Ok(())
+    }
+
     pub fn finish(
         mut self,
         summary: &ScanSummary,
@@ -170,11 +297,13 @@ impl ScanWriter<'_> {
         } else {
             "completed"
         };
+        self.scan.duplicates_analyzed &= !summary.cancelled;
         self.transaction.execute(
             "UPDATE scans SET finished_unix_ms = ?1, status = ?2, files = ?3, directories = ?4,
                               logical_bytes = ?5, large_files = ?6, skipped = ?7, errors = ?8,
-                              first_error = ?9
-             WHERE id = ?10",
+                              first_error = ?9, duplicates_analyzed = ?10,
+                              duplicate_group_count = ?11
+             WHERE id = ?12",
             params![
                 unix_millis(SystemTime::now())?,
                 status,
@@ -185,6 +314,8 @@ impl ScanWriter<'_> {
                 sqlite_integer(progress.skipped)?,
                 sqlite_integer(progress.errors)?,
                 summary.first_error,
+                self.scan.duplicates_analyzed,
+                sqlite_integer(self.scan.duplicate_group_count)?,
                 self.scan.id,
             ],
         )?;
@@ -195,6 +326,16 @@ impl ScanWriter<'_> {
         self.scan.large_file_count = large_file_count;
         Ok(self.scan)
     }
+}
+
+fn file_record(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
+    Ok(FileRecord {
+        path: decode_path(row, 0)?,
+        logical_bytes: unsigned_integer(row, 2)?,
+        created: datetime(row, 3)?,
+        modified: datetime(row, 5)?,
+        read_only: row.get(7)?,
+    })
 }
 
 fn schema_version(connection: &Connection) -> rusqlite::Result<i64> {

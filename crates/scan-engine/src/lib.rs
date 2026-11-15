@@ -6,6 +6,10 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+mod duplicates;
+
+pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
+
 #[derive(Debug)]
 pub struct FileRecord {
     pub path: PathBuf,

@@ -10,7 +10,10 @@ class SchemaTests(unittest.TestCase):
     def setUp(self):
         self.db = sqlite3.connect(":memory:")
         self.addCleanup(self.db.close)
-        schema = (SQL / "001_initial.sql").read_text(encoding="utf-8")
+        schema = "\n".join(
+            (SQL / migration).read_text(encoding="utf-8")
+            for migration in ("001_initial.sql", "002_exact_duplicates.sql")
+        )
         self.db.executescript(f"PRAGMA foreign_keys = ON; BEGIN;\n{schema}\nCOMMIT;")
 
     def add_scan(self):
@@ -41,7 +44,7 @@ class SchemaTests(unittest.TestCase):
         ).fetchall()
 
     def test_history_includes_cancelled_scans_and_excludes_in_progress_scans(self):
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (1,))
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (2,))
         completed, cancelled, _ = (self.add_scan() for _ in range(3))
         self.finish_scan(completed, "completed")
         self.finish_scan(cancelled, "cancelled")

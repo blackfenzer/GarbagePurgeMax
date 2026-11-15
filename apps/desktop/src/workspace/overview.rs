@@ -1,18 +1,24 @@
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _,
+    ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
+    tooltip::Tooltip,
 };
-use gpui_kit::{Context, Div, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{
+    Context, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
+};
 
-use super::scan::{ScanSession, format_bytes};
-use super::{Page, Workspace};
+use super::{Page, Workspace, exclusions::path_label, scan::format_bytes};
 
-pub(super) fn render(scan: &ScanSession, viewing_saved_scan: bool, cx: &Context<Workspace>) -> Div {
+pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoElement {
+    let scan = &workspace.scan;
     let (heading, description) = match (&scan.active, &scan.report) {
         (Some(active), _) => (
             if active.cancelling {
                 "Cancelling scan"
+            } else if active.analyzing {
+                "Checking duplicates"
             } else {
                 "Scanning folder"
             },
@@ -52,12 +58,12 @@ pub(super) fn render(scan: &ScanSession, viewing_saved_scan: bool, cx: &Context<
         None => Button::new("choose-folder")
             .primary()
             .label("Choose folder")
-            .disabled(scan.choosing_folder)
+            .disabled(scan.choosing_folder || workspace.exclusion_settings_busy())
             .on_click(cx.listener(|workspace, _, _, cx| workspace.choose_scan_folder(cx))),
     };
     let results_button = Button::new("open-results")
         .ghost()
-        .label(if scan.report.is_some() || viewing_saved_scan {
+        .label(if scan.report.is_some() || workspace.results.is_saved() {
             "View results"
         } else {
             "View sample results"
@@ -68,6 +74,9 @@ pub(super) fn render(scan: &ScanSession, viewing_saved_scan: bool, cx: &Context<
         }));
 
     div()
+        .id("overview")
+        .size_full()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_5()
@@ -104,4 +113,94 @@ pub(super) fn render(scan: &ScanSession, viewing_saved_scan: bool, cx: &Context<
                         .child(results_button),
                 ),
         )
+        .child(exclusions_card(workspace, cx))
+}
+
+fn exclusions_card(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoElement {
+    let exclusions = &workspace.exclusions;
+    let disabled = workspace.exclusion_controls_disabled();
+    let rows = exclusions.paths.iter().enumerate().map(|(index, path)| {
+        let path_to_remove = path.clone();
+        let label = path_label(path);
+        let tooltip = label.clone();
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .py_1()
+            .child(
+                div()
+                    .id(("excluded-path", index))
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .text_sm()
+                    .text_ellipsis()
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .child(label),
+            )
+            .child(
+                Button::new(("remove-exclusion", index))
+                    .ghost()
+                    .small()
+                    .label("Remove")
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                        workspace.remove_exclusion(path_to_remove.clone(), cx);
+                    })),
+            )
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .w_full()
+        .max_w(px(640.0))
+        .p_5()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().child("Scan exclusions"))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("These files and folders are skipped in future scans."),
+        )
+        .children(exclusions.error.as_ref().map(|error| {
+            div()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(error.clone())
+        }))
+        .children(exclusions.busy.then(|| {
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Updating scan exclusions…")
+        }))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    Button::new("exclude-folder")
+                        .small()
+                        .label("Add folder")
+                        .disabled(disabled)
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.choose_exclusion(true, cx);
+                        })),
+                )
+                .child(
+                    Button::new("exclude-file")
+                        .small()
+                        .label("Add file")
+                        .disabled(disabled)
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.choose_exclusion(false, cx);
+                        })),
+                ),
+        )
+        .children(rows)
 }

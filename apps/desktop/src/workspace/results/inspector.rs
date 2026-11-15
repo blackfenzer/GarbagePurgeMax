@@ -7,6 +7,7 @@ use gpui_kit::{
     Styled as _, div, px,
 };
 use scan_engine::FileRecord;
+use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
 use super::{SampleFile, Workspace};
@@ -27,7 +28,12 @@ pub(super) fn sample_file(file: &SampleFile, cx: &Context<Workspace>) -> Div {
         .child(div().text_sm().text_color(muted).child(file.explanation))
 }
 
-pub(super) fn scanned_file(file: &FileRecord, threshold: u64, cx: &Context<Workspace>) -> Div {
+pub(super) fn scanned_file(
+    file: &FileRecord,
+    threshold: u64,
+    duplicate: Option<&DuplicateEvidence>,
+    cx: &Context<Workspace>,
+) -> Div {
     let muted = cx.theme().muted_foreground;
     let name = file.path.file_name().unwrap_or(file.path.as_os_str());
     let extension = file
@@ -79,6 +85,23 @@ pub(super) fn scanned_file(file: &FileRecord, threshold: u64, cx: &Context<Works
                 "The logical size meets the scan’s {} threshold.",
                 format_bytes(threshold)
             )));
+    }
+    if let Some(duplicate) = duplicate {
+        content = content
+            .child(div().text_sm().font_semibold().child("Exact duplicate"))
+            .child(div().text_sm().text_color(muted).child(format!(
+                "{} distinct files had matching contents when scanned.",
+                duplicate.file_count
+            )))
+            .child(div().text_xs().text_color(muted).child("SHA-256"))
+            .children(duplicate.hash.chunks(16).map(|bytes| {
+                div().text_xs().child(
+                    bytes
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>(),
+                )
+            }));
     }
     content
 }

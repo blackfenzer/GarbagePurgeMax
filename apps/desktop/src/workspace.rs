@@ -1,3 +1,4 @@
+mod exclusions;
 mod history;
 mod overview;
 mod results;
@@ -21,6 +22,7 @@ enum Page {
 
 pub(crate) struct Workspace {
     page: Page,
+    exclusions: exclusions::Exclusions,
     results: results::Results,
     scan: scan::ScanSession,
     history: history::History,
@@ -46,11 +48,16 @@ impl Render for Workspace {
                     )
                     .child(SidebarGroup::new("Storage").child(menu)),
             )
-            .child(div().flex_1().min_w(px(0.0)).child(match self.page {
-                Page::Overview => overview::render(&self.scan, self.results.is_saved(), cx),
-                Page::Results => self.results.render(self.scan.report.as_ref(), cx),
-                Page::History => self.history.render(cx),
-            }))
+            .child(
+                div().flex_1().min_w(px(0.0)).child(match self.page {
+                    Page::Overview => overview::render(self, cx).into_any_element(),
+                    Page::Results => self
+                        .results
+                        .render(self.scan.report.as_ref(), cx)
+                        .into_any_element(),
+                    Page::History => self.history.render(cx).into_any_element(),
+                }),
+            )
     }
 }
 
@@ -58,6 +65,7 @@ impl Workspace {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             page: Page::default(),
+            exclusions: exclusions::Exclusions::load(cx),
             results: results::Results::new(window, cx),
             scan: scan::ScanSession::default(),
             history: history::History::default(),

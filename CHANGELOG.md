@@ -10,6 +10,9 @@
 - Independent scanner crate and fixtures covering exclusions, permissions, symlinks, hard links, and cancellation.
 - A local SQLite index with scan history, paginated file-path search, and a virtualized results table with keyboard row navigation.
 - A 100-file preview with an error message if a scan cannot be saved.
+- Per-file and per-folder exclusions that persist across app restarts.
+- Exact duplicate findings with a duplicate-only view, verified group size, and SHA-256 evidence in File Inspector.
+- A reproducible 100,000-file traversal benchmark and a Windows x64 build and test workflow.
 
 ### Fixed
 

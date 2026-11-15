@@ -11,11 +11,11 @@
 | SQLite persistence verified | Cached and built bundled `rusqlite`. The workspace tests reopen a database, search for a file outside the preview, recover cancelled scan metadata, and confirm rollback when a writer is dropped. |
 | Results and History views implemented | The virtualized table presents up to 100 rows per page. Search covers every indexed file in a saved scan. Scan History opens past scans, including cancelled ones. An unsaved scan shows an error and a temporary preview. |
 | Scan History smoke check passed | The user confirmed the saved scan reopened after restarting the macOS app. The History sidebar now uses GPUI Kit’s bundled calendar icon to resolve the reported missing SVG. |
-| Remaining interactive checks | Exercise search and keyboard navigation, and picker and scan cancellation. Build and exercise the workflow on Windows x64. |
-| Planned for v0.1 | Staged exact duplicate analysis with file-identity revalidation, configurable exclusions, and platform benchmarks. |
+| Scan exclusions and exact duplicates | Added persistent path exclusions, staged SHA-256 and byte comparison, migration of existing history, and duplicate evidence in Scan Results and File Inspector. The Apple Silicon build, strict Clippy, 30 Rust tests, and 4 SQLite schema tests passed. |
+| Traversal benchmark | The release scan engine averaged 267,804 files/s with 2,272 KiB peak worker RSS and 6.5 µs median cancellation latency on the synthetic 100,000-file fixture. See [method and results](benchmarks.md). |
+| Windows CI ready | Added a Windows x64 MSVC workflow that builds the desktop executable and runs the workspace tests. Native Windows execution is pending. |
+| Remaining interactive checks | The desktop automation rejected the unpackaged macOS executable. Full-scan search, mouse and keyboard navigation, and picker and scan cancellation still need an interactive check. Build and run the desktop workflow on Windows 11 x64. |
 
 ## Next development session
 
-1. Verify full-scan search, cancellation and keyboard navigation on macOS.
-2. Add staged hashing with file-identity revalidation and surface the evidence in File Inspector.
-3. Run the fixture suite, smoke tests, and benchmarks on both target platforms.
+Follow the [v0.1 release gates](tasks.md#close-before-v01). The next implementation task is the saved scan’s file-type breakdown. Windows x64 build verification can proceed independently. Run final platform smoke tests and the end-to-end benchmark against the integrated build.

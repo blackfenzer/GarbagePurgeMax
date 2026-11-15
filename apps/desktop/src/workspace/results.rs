@@ -4,7 +4,7 @@ mod saved;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::Button,
     input::{Input, InputEvent, InputState},
     table::{DataTable, TableEvent, TableState},
@@ -104,7 +104,7 @@ impl Results {
         }
         self.saved = None;
         let query = self.input.read(cx).value();
-        let rows = FileRows::from_files(&report.largest_files, LARGE_FILE_BYTES, &query);
+        let rows = FileRows::from_files(&report.largest_files, LARGE_FILE_BYTES, &query, None);
         self.replace_rows(rows, cx);
     }
 
@@ -152,7 +152,14 @@ impl Results {
                 };
                 let detail = selected
                     .and_then(|index| saved.files.get(index))
-                    .map(|file| inspector::scanned_file(file, scan.large_file_threshold, cx));
+                    .map(|file| {
+                        inspector::scanned_file(
+                            file,
+                            scan.large_file_threshold,
+                            saved.evidence.get(&file.path),
+                            cx,
+                        )
+                    });
                 (
                     summary_line(scan.progress, scan.cancelled, scan.large_file_count),
                     scope,
@@ -168,7 +175,7 @@ impl Results {
                 let scope = format!("{} of {} preview files · Largest first", matches, files,);
                 let detail = selected
                     .and_then(|index| report.largest_files.get(index))
-                    .map(|file| inspector::scanned_file(file, LARGE_FILE_BYTES, cx));
+                    .map(|file| inspector::scanned_file(file, LARGE_FILE_BYTES, None, cx));
                 (
                     description,
                     scope,
@@ -192,6 +199,26 @@ impl Results {
             .saved
             .as_ref()
             .is_none_or(|saved| !saved.loading && saved.error.is_none());
+        let duplicate_summary = self.saved.as_ref().map(|saved| {
+            let scan = &saved.scan;
+            if scan.duplicates_analyzed {
+                let mut text = format!("{} duplicate groups", scan.duplicate_group_count);
+                if scan.duplicate_error_count > 0 {
+                    text.push_str(&format!(
+                        " · {} files skipped during verification",
+                        scan.duplicate_error_count
+                    ));
+                }
+                text
+            } else if scan.cancelled {
+                format!(
+                    "Duplicate check incomplete · {} verified groups",
+                    scan.duplicate_group_count
+                )
+            } else {
+                "Run a new scan to check for duplicates".into()
+            }
+        });
         let pagination = self
             .saved
             .as_ref()
@@ -254,11 +281,40 @@ impl Results {
                             .text_color(muted)
                             .child(format!("Could not save scan: {error}"))
                     }))
+                    .children(
+                        duplicate_summary
+                            .map(|message| div().text_sm().text_color(muted).child(message)),
+                    )
                     .child(
-                        Input::new(&self.input)
-                            .small()
-                            .cleanable(true)
-                            .aria_label("Search file paths"),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div().flex_1().min_w(px(0.)).child(
+                                    Input::new(&self.input)
+                                        .small()
+                                        .cleanable(true)
+                                        .aria_label("Search file paths"),
+                                ),
+                            )
+                            .children(
+                                self.saved
+                                    .as_ref()
+                                    .filter(|saved| saved.scan.duplicate_group_count > 0)
+                                    .map(|saved| {
+                                        Button::new("duplicates-only")
+                                            .small()
+                                            .label("Duplicates only")
+                                            .selected(saved.duplicates_only)
+                                            .on_click(cx.listener(|workspace, _, _, cx| {
+                                                if let Some(saved) = &mut workspace.results.saved {
+                                                    saved.duplicates_only = !saved.duplicates_only;
+                                                    workspace.results.load_page(0, false, cx);
+                                                }
+                                            }))
+                                    }),
+                            ),
                     )
                     .children(
                         (!scope.is_empty()).then(|| div().text_sm().text_color(muted).child(scope)),

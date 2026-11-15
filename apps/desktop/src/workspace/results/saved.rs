@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::{AppContext as _, Context, Task};
 use scan_engine::FileRecord;
-use scan_store::SavedScan;
+use scan_store::{DuplicateEvidence, SavedScan};
 
 use super::super::{Workspace, storage};
 use super::{FileRows, Results};
@@ -13,6 +15,8 @@ const SEARCH_DELAY: Duration = Duration::from_millis(175);
 pub(super) struct SavedResults {
     pub scan: SavedScan,
     pub files: Vec<FileRecord>,
+    pub evidence: HashMap<PathBuf, DuplicateEvidence>,
+    pub duplicates_only: bool,
     pub offset: u64,
     pub has_next: bool,
     pub loading: bool,
@@ -29,6 +33,8 @@ impl Results {
         self.saved = Some(SavedResults {
             scan,
             files: Vec::new(),
+            evidence: HashMap::new(),
+            duplicates_only: false,
             offset: 0,
             has_next: false,
             loading: true,
@@ -45,8 +51,10 @@ impl Results {
         saved.loading = true;
         saved.error = None;
         saved.files.clear();
+        saved.evidence.clear();
         saved.has_next = false;
         let scan_id = saved.scan.id;
+        let duplicates_only = saved.duplicates_only;
         let query = self.input.read(cx).value().to_string();
         let executor = cx.background_executor().clone();
         saved.request = Some(cx.spawn(async move |workspace, cx| {
@@ -55,9 +63,19 @@ impl Results {
             }
             let result = cx
                 .background_spawn(async move {
-                    storage::open()?
-                        .files(scan_id, &query, PAGE_SIZE + 1, offset)
-                        .map_err(std::io::Error::other)
+                    let store = storage::open()?;
+                    let mut files = if duplicates_only {
+                        store.duplicate_files(scan_id, &query, PAGE_SIZE + 1, offset)
+                    } else {
+                        store.files(scan_id, &query, PAGE_SIZE + 1, offset)
+                    }
+                    .map_err(std::io::Error::other)?;
+                    let has_next = files.len() > PAGE_SIZE as usize;
+                    files.truncate(PAGE_SIZE as usize);
+                    let evidence = store
+                        .duplicate_evidence(scan_id, &files)
+                        .map_err(std::io::Error::other)?;
+                    Ok::<_, std::io::Error>((files, evidence, has_next))
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {
@@ -67,19 +85,24 @@ impl Results {
                 };
                 saved.loading = false;
                 match result {
-                    Ok(mut files) => {
-                        saved.has_next = files.len() > PAGE_SIZE as usize;
-                        files.truncate(PAGE_SIZE as usize);
+                    Ok((files, evidence, has_next)) => {
+                        saved.has_next = has_next;
                         saved.files = files;
+                        saved.evidence = evidence;
                     }
                     Err(error) => saved.error = Some(format!("Could not load scan files: {error}")),
                 }
-                let rows = FileRows::from_files(&saved.files, saved.scan.large_file_threshold, "");
+                let rows = FileRows::from_files(
+                    &saved.files,
+                    saved.scan.large_file_threshold,
+                    "",
+                    Some(&saved.evidence),
+                );
                 results.replace_rows(rows, cx);
                 cx.notify();
             });
         }));
-        self.replace_rows(FileRows::from_files(&[], 0, ""), cx);
+        self.replace_rows(FileRows::from_files(&[], 0, "", None), cx);
         cx.notify();
     }
 }

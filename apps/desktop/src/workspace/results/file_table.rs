@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use gpui_kit::component::{
     ActiveTheme as _,
     table::{Column, TableDelegate, TableState},
@@ -6,6 +9,7 @@ use gpui_kit::{
     App, Context, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px,
 };
 use scan_engine::FileRecord;
+use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
 use super::SAMPLE_FILES;
@@ -40,12 +44,16 @@ impl FileRows {
         records: &[FileRecord],
         large_file_threshold: u64,
         query: &str,
+        evidence: Option<&HashMap<PathBuf, DuplicateEvidence>>,
     ) -> Self {
         let files = records
             .iter()
             .map(|file| {
                 let name = file.path.file_name().unwrap_or(file.path.as_os_str());
-                let finding = if file.logical_bytes >= large_file_threshold {
+                let finding = if evidence.is_some_and(|evidence| evidence.contains_key(&file.path))
+                {
+                    "Exact duplicate"
+                } else if file.logical_bytes >= large_file_threshold {
                     "Large file"
                 } else {
                     "—"
