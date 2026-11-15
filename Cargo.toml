@@ -6,3 +6,7 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 publish = false
+
+# Debug SHA-256 runs at about 120 MiB/s, which stalls duplicate checks during `cargo run`.
+[profile.dev.package.sha2]
+opt-level = 3

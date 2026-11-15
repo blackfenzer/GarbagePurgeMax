@@ -82,9 +82,24 @@ impl ScanStore {
         root: &Path,
         large_file_threshold: u64,
     ) -> rusqlite::Result<ScanWriter<'_>> {
+        // Each scan holds the write lock until it finishes, so a second app instance waits here.
         let transaction = self
             .0
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| match error {
+                rusqlite::Error::SqliteFailure(code, _)
+                    if code.code == rusqlite::ErrorCode::DatabaseBusy =>
+                {
+                    rusqlite::Error::SqliteFailure(
+                        code,
+                        Some(
+                            "another Storage Clinic window is saving a scan. Close it and scan again"
+                                .into(),
+                        ),
+                    )
+                }
+                error => error,
+            })?;
         let started_unix_ms = unix_millis(SystemTime::now())?;
         transaction.execute(
             "INSERT INTO scans (root_key, display_root, started_unix_ms, status, large_file_threshold)

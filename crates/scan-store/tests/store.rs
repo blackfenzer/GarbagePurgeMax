@@ -286,6 +286,23 @@ fn totals_file_types_for_a_reopened_partial_scan() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+#[test]
+fn explains_a_scan_blocked_by_another_window() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("scans.sqlite3");
+    let mut saving = ScanStore::open(&db)?;
+    let mut blocked = ScanStore::open(&db)?;
+    let _writer = saving.begin_scan(directory.path(), 1)?;
+    let Err(error) = blocked.begin_scan(directory.path(), 1) else {
+        panic!("a second writer started while the first scan was saving");
+    };
+    assert_eq!(
+        error.to_string(),
+        "another Storage Clinic window is saving a scan. Close it and scan again"
+    );
+    Ok(())
+}
+
 fn file(path: &str, logical_bytes: u64) -> FileRecord {
     FileRecord {
         path: path.into(),

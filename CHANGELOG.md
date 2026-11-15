@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- A scan started while another app window is saving now explains why it could not be saved.
+- Development builds verify duplicates at near-release speed.
 - Scan History uses a sidebar icon included in the app’s default assets.
 
 ### Verified
