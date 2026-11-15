@@ -505,4 +505,148 @@ mod tests {
         );
         Ok(())
     }
+
+    // End-to-end benchmarks over the app's scan, index, and verification pipeline.
+    // Run one at a time so peak RSS belongs to one input; see docs/benchmarks.md.
+    #[test]
+    #[ignore = "benchmark: run in release with --ignored --nocapture"]
+    fn benchmark_mostly_unique_end_to_end() -> io::Result<()> {
+        end_to_end_benchmark(false)
+    }
+
+    #[test]
+    #[ignore = "benchmark: run in release with --ignored --nocapture"]
+    fn benchmark_duplicate_heavy_end_to_end() -> io::Result<()> {
+        end_to_end_benchmark(true)
+    }
+
+    const BENCHMARK_FOLDERS: u64 = 1_000;
+    const BENCHMARK_FILES_PER_FOLDER: u64 = 100;
+    const BENCHMARK_FILES: u64 = BENCHMARK_FOLDERS * BENCHMARK_FILES_PER_FOLDER;
+
+    /// Each folder holds 100 files of one size (4,096 + folder bytes), so both inputs give
+    /// 1,000 same-size candidate buckets. Mostly unique files differ in their first bytes;
+    /// duplicate-heavy folders hold two contents of 50 identical files each.
+    fn end_to_end_benchmark(duplicate_heavy: bool) -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("tree");
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        let started = Instant::now();
+        for folder in 0..BENCHMARK_FOLDERS {
+            let directory = root.join(format!("folder-{folder:04}"));
+            std::fs::create_dir_all(&directory)?;
+            for file in 0..BENCHMARK_FILES_PER_FOLDER {
+                let mut contents = vec![0_u8; 4_096 + folder as usize];
+                if duplicate_heavy {
+                    contents.fill(b'a' + (file % 2) as u8);
+                } else {
+                    contents[..8].copy_from_slice(&(folder * 1_000 + file).to_le_bytes());
+                }
+                std::fs::write(directory.join(format!("report-{file:03}.txt")), contents)?;
+            }
+        }
+        let expected_groups = if duplicate_heavy {
+            2 * BENCHMARK_FOLDERS
+        } else {
+            0
+        };
+        println!(
+            "Input: {} · fixture written in {:.1} s",
+            if duplicate_heavy {
+                "duplicate-heavy"
+            } else {
+                "mostly unique"
+            },
+            started.elapsed().as_secs_f64()
+        );
+
+        // The first pass follows fixture creation, so file data is likely still cached.
+        let mut scan_id = 0;
+        for pass in ["first", "repeat"] {
+            let cancel = AtomicBool::new(false);
+            let started = Instant::now();
+            let mut indexed = None;
+            let report =
+                inspect_and_save(root.clone(), Ok(database.clone()), &cancel, |activity| {
+                    if activity.analyzing && indexed.is_none() {
+                        indexed = Some(started.elapsed());
+                    }
+                })?;
+            let total = started.elapsed();
+            assert!(report.save_error.is_none(), "{:?}", report.save_error);
+            let saved = report.saved.expect("benchmark scan saved");
+            assert_eq!(saved.progress.files, BENCHMARK_FILES);
+            assert_eq!(saved.duplicate_group_count, expected_groups);
+            let indexed = indexed.expect("verification phase reported");
+            println!(
+                "Scan ({pass}): traversal + SQLite index {:.2} s · verification + commit {:.2} s · total {:.2} s",
+                indexed.as_secs_f64(),
+                (total - indexed).as_secs_f64(),
+                total.as_secs_f64()
+            );
+            scan_id = saved.id;
+        }
+
+        let store = storage::open_at(&database)?;
+        let last_page = BENCHMARK_FILES - 100;
+        timed("First page", || store.files(scan_id, "", 101, 0))?;
+        timed("Last page", || store.files(scan_id, "", 101, last_page))?;
+        timed("Search folder-0999", || {
+            store.files(scan_id, "folder-0999", 101, 0)
+        })?;
+        timed("Search report, last page", || {
+            store.files(scan_id, "report", 101, last_page)
+        })?;
+        timed("Duplicates first page", || {
+            store.duplicate_files(scan_id, "", 101, 0)
+        })?;
+        timed("File types", || store.file_types(scan_id))?;
+
+        for during_verification in [false, true] {
+            let cancel = AtomicBool::new(false);
+            let mut cancelled_at = None;
+            let report =
+                inspect_and_save(root.clone(), Ok(database.clone()), &cancel, |activity| {
+                    let ready = if during_verification {
+                        activity.analyzing
+                    } else {
+                        activity.progress.files >= BENCHMARK_FILES / 2
+                    };
+                    if ready && cancelled_at.is_none() {
+                        cancel.store(true, Ordering::Relaxed);
+                        cancelled_at = Some(Instant::now());
+                    }
+                })?;
+            let latency = cancelled_at.expect("cancellation was requested").elapsed();
+            assert!(report.summary.cancelled);
+            println!(
+                "Cancel during {}: returned in {:.1} ms after {} indexed files",
+                if during_verification {
+                    "verification"
+                } else {
+                    "indexing"
+                },
+                millis(latency),
+                report.summary.progress.files
+            );
+        }
+        Ok(())
+    }
+
+    fn timed<T, E>(label: &str, query: impl FnOnce() -> Result<Vec<T>, E>) -> io::Result<()>
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let started = Instant::now();
+        let rows = query().map_err(io::Error::other)?.len();
+        println!(
+            "{label}: {rows} rows in {:.1} ms",
+            millis(started.elapsed())
+        );
+        Ok(())
+    }
+
+    fn millis(duration: Duration) -> f64 {
+        duration.as_secs_f64() * 1_000.0
+    }
 }
