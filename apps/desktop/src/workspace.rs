@@ -59,7 +59,10 @@ impl Render for Workspace {
                         .results
                         .render(self.scan.report.as_ref(), cx)
                         .into_any_element(),
-                    Page::History => self.history.render(cx).into_any_element(),
+                    Page::History => self
+                        .history
+                        .render(self.can_start_scan(), cx)
+                        .into_any_element(),
                     Page::Review => self.review.render(cx).into_any_element(),
                 }),
             )

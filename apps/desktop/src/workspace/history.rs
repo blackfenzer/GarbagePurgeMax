@@ -54,7 +54,7 @@ impl History {
         cx.notify();
     }
 
-    pub(super) fn render(&self, cx: &Context<Workspace>) -> Div {
+    pub(super) fn render(&self, can_scan: bool, cx: &Context<Workspace>) -> Div {
         let muted = cx.theme().muted_foreground;
         let previous = self.offset.saturating_sub(u64::from(PAGE_SIZE));
         let next = self.offset + u64::from(PAGE_SIZE);
@@ -77,6 +77,7 @@ impl History {
                 "Completed"
             };
             let scan_to_open = scan.clone();
+            let root_to_scan = scan.root.clone();
             div()
                 .flex()
                 .items_center()
@@ -99,14 +100,30 @@ impl History {
                         ))),
                 )
                 .child(
-                    Button::new(("open-saved-scan", scan.id as u64))
-                        .label("Open")
-                        .small()
-                        .on_click(cx.listener(move |workspace, _, _, cx| {
-                            workspace.results.open_saved(scan_to_open.clone(), cx);
-                            workspace.page = Page::Results;
-                            cx.notify();
-                        })),
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .gap_2()
+                        .child(
+                            Button::new(("scan-again", scan.id as u64))
+                                .label("Scan again")
+                                .ghost()
+                                .small()
+                                .disabled(!can_scan)
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    workspace.scan_again(root_to_scan.clone(), cx);
+                                })),
+                        )
+                        .child(
+                            Button::new(("open-saved-scan", scan.id as u64))
+                                .label("Open")
+                                .small()
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    workspace.results.open_saved(scan_to_open.clone(), cx);
+                                    workspace.page = Page::Results;
+                                    cx.notify();
+                                })),
+                        ),
                 )
         });
 

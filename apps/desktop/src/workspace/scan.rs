@@ -56,8 +56,7 @@ pub(super) struct ScanReport {
 
 impl Workspace {
     pub(super) fn choose_scan_folder(&mut self, cx: &mut Context<Self>) {
-        if self.scan.choosing_folder || self.scan.active.is_some() || self.exclusion_settings_busy()
-        {
+        if !self.can_start_scan() {
             return;
         }
         self.scan.choosing_folder = true;
@@ -100,6 +99,21 @@ impl Workspace {
             active.cancel.store(true, Ordering::Relaxed);
             cx.notify();
         }
+    }
+
+    /// Repeats a saved scan's folder with the current exclusions.
+    pub(super) fn scan_again(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if !self.can_start_scan() {
+            return;
+        }
+        self.scan.error = None;
+        self.page = Page::Overview;
+        self.start_scan(root, cx);
+        cx.notify();
+    }
+
+    pub(super) fn can_start_scan(&self) -> bool {
+        !self.scan.choosing_folder && self.scan.active.is_none() && !self.exclusion_settings_busy()
     }
 
     fn start_scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
