@@ -219,6 +219,30 @@ impl Results {
                 "Run a new scan to check for duplicates".into()
             }
         });
+        let file_type_summary = self.saved.as_ref().map(|saved| match &saved.file_types {
+            None => "Loading file types…".to_string(),
+            Some(Err(error)) => error.clone(),
+            Some(Ok(totals)) => {
+                let label = if saved.scan.cancelled {
+                    "Indexed file types"
+                } else {
+                    "File types"
+                };
+                let totals = totals
+                    .iter()
+                    .map(|total| {
+                        format!(
+                            "{} {} ({})",
+                            total.file_type,
+                            total.files,
+                            format_bytes(total.logical_bytes)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                format!("{label}: {totals}")
+            }
+        });
         let pagination = self
             .saved
             .as_ref()
@@ -283,6 +307,8 @@ impl Results {
                     }))
                     .children(
                         duplicate_summary
+                            .into_iter()
+                            .chain(file_type_summary)
                             .map(|message| div().text_sm().text_color(muted).child(message)),
                     )
                     .child(

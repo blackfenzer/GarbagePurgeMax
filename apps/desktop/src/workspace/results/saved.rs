@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::{AppContext as _, Context, Task};
 use scan_engine::FileRecord;
-use scan_store::{DuplicateEvidence, SavedScan};
+use scan_store::{DuplicateEvidence, FileTypeTotal, SavedScan};
 
 use super::super::{Workspace, storage};
 use super::{FileRows, Results};
@@ -21,7 +21,10 @@ pub(super) struct SavedResults {
     pub has_next: bool,
     pub loading: bool,
     pub error: Option<String>,
+    /// `None` while the totals load; they cover the whole saved scan, not the current page.
+    pub file_types: Option<Result<Vec<FileTypeTotal>, String>>,
     request: Option<Task<()>>,
+    _file_types_request: Task<()>,
 }
 
 impl Results {
@@ -30,6 +33,25 @@ impl Results {
         scan: SavedScan,
         cx: &mut Context<Workspace>,
     ) {
+        let scan_id = scan.id;
+        let file_types_request = cx.spawn(async move |workspace, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    storage::open()?
+                        .file_types(scan_id)
+                        .map_err(std::io::Error::other)
+                })
+                .await
+                .map_err(|error| format!("Could not load file types: {error}"));
+            let _ = workspace.update(cx, |workspace, cx| {
+                if let Some(saved) = &mut workspace.results.saved
+                    && saved.scan.id == scan_id
+                {
+                    saved.file_types = Some(result);
+                    cx.notify();
+                }
+            });
+        });
         self.saved = Some(SavedResults {
             scan,
             files: Vec::new(),
@@ -39,7 +61,9 @@ impl Results {
             has_next: false,
             loading: true,
             error: None,
+            file_types: None,
             request: None,
+            _file_types_request: file_types_request,
         });
         self.load_page(0, false, cx);
     }

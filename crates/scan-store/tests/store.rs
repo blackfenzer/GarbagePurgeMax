@@ -4,7 +4,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use scan_engine::{FileRecord, ScanProgress, ScanSummary};
-use scan_store::{DuplicateEvidence, ScanStore};
+use scan_store::{DuplicateEvidence, FileTypeTotal, ScanStore};
 
 #[test]
 fn restores_partial_scan_metadata_and_paginates_literal_search()
@@ -248,6 +248,41 @@ fn distinguishes_completed_analysis_with_zero_duplicates() -> Result<(), Box<dyn
     let scans = store.scans(10, 0)?;
     assert!(scans[0].duplicates_analyzed);
     assert_eq!(scans[0].duplicate_group_count, 0);
+    Ok(())
+}
+
+#[test]
+fn totals_file_types_for_a_reopened_partial_scan() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("scans.sqlite3");
+    let mut store = ScanStore::open(&db)?;
+    let mut writer = store.begin_scan(directory.path(), 1)?;
+    for record in [
+        file("a.JPG", 10),
+        file("b.png", 5),
+        file("README", 3),
+        file("c.unknown", 4),
+        file("d.pdf", 1),
+    ] {
+        writer.insert_file(&record)?;
+    }
+    let scan = writer.finish(&summary(5, true), 0)?;
+    drop(store);
+
+    let totals = ScanStore::open(&db)?.file_types(scan.id)?;
+    let total = |file_type, files, logical_bytes| FileTypeTotal {
+        file_type,
+        files,
+        logical_bytes,
+    };
+    assert_eq!(
+        totals,
+        [
+            total("Images", 2, 15),
+            total("Other", 2, 7),
+            total("Documents", 1, 1)
+        ]
+    );
     Ok(())
 }
 

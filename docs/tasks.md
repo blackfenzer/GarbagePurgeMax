@@ -22,13 +22,13 @@ The release flow is **Select Folder → Scan → Analyze → Inspect Results** o
 
 | Order | Task | Acceptance |
 | --- | --- | --- |
-| 1 | [ ] Add a file-type breakdown to the scan summary | Show counts and logical bytes for the current saved scan, with a fallback for files without a recognized extension. Keep categorization off the UI thread and cover partial and reopened scans. |
+| 1 | [x] Add a file-type breakdown to the scan summary | Show counts and logical bytes for the current saved scan, with a fallback for files without a recognized extension. Keep categorization off the UI thread and cover partial and reopened scans. |
 | 2 | [ ] Run the macOS desktop smoke test | Use a generated tree to verify picker cancel, cancel during traversal or duplicate verification, full-scan search beyond the first page, keyboard and mouse Inspector navigation, exclusions, duplicate evidence, and reopened history. Check folder and supported mounted-volume selection through the existing picker. |
 | 3 | [ ] Run native Windows x64 CI and the Windows 11 desktop smoke test | Link the locked app, pass the shared fixture suite, and repeat the macOS smoke scenarios using Windows paths and a disposable folder or test volume. Record the runner, Windows version, and any platform-specific limits. |
 | 4 | [ ] Measure the end-to-end flow on 100,000+ files | Include SQLite indexing, duplicate-heavy and mostly unique inputs, search and paging during review, and a cancellation check. Record per-phase timing, peak process memory, and responsiveness separately from the traversal benchmark. Record warm and cold-cache observations where reproducible. |
 | 5 | [ ] Document the v0.1 release and portfolio demo | Update setup, platform limits and measured results. Capture screenshots and a short read-only workflow demo once both platforms pass. Record the build artifacts and link the architecture and benchmark evidence. |
 
-The file-type breakdown can proceed alongside native Windows build verification. Run final release checks on the integrated build. If the desktop automation cannot launch the development executable, run the smoke test in an interactive OS session and record what passed.
+Run final release checks on the integrated build. If the desktop automation cannot launch the development executable, run the smoke test in an interactive OS session and record what passed.
 
 ## v0.2 · Analysis and discovery
 

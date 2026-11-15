@@ -7,8 +7,10 @@ use std::time::SystemTime;
 use walkdir::WalkDir;
 
 mod duplicates;
+mod file_types;
 
 pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
+pub use file_types::{OTHER_FILE_TYPE, file_type};
 
 #[derive(Debug)]
 pub struct FileRecord {

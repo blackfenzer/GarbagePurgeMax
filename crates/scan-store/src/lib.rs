@@ -9,7 +9,7 @@ use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, named_params, params,
     types::Type,
 };
-use scan_engine::{FileRecord, ScanProgress, ScanSummary};
+use scan_engine::{FileRecord, ScanProgress, ScanSummary, file_type};
 
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
@@ -25,6 +25,13 @@ const LIST_DUPLICATE_FILES: &str = include_str!("../sql/list_duplicate_files.sql
 pub struct DuplicateEvidence {
     pub file_count: u64,
     pub hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileTypeTotal {
+    pub file_type: &'static str,
+    pub files: u64,
+    pub logical_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +183,34 @@ impl ScanStore {
             }
         }
         Ok(evidence)
+    }
+
+    /// Totals indexed files by type, largest first. Cancelled scans cover the indexed part.
+    // ponytail: reads every file row per call; store a type column if large scans show it.
+    pub fn file_types(&self, scan_id: i64) -> rusqlite::Result<Vec<FileTypeTotal>> {
+        let mut totals: HashMap<&'static str, FileTypeTotal> = HashMap::new();
+        let mut statement = self
+            .0
+            .prepare_cached("SELECT path_key, logical_bytes FROM files WHERE scan_id = ?1")?;
+        let mut rows = statement.query([scan_id])?;
+        while let Some(row) = rows.next()? {
+            let file_type = file_type(&decode_path(row, 0)?);
+            let total = totals.entry(file_type).or_insert(FileTypeTotal {
+                file_type,
+                files: 0,
+                logical_bytes: 0,
+            });
+            total.files += 1;
+            total.logical_bytes += unsigned_integer(row, 1)?;
+        }
+        let mut totals: Vec<_> = totals.into_values().collect();
+        totals.sort_unstable_by(|left, right| {
+            right
+                .logical_bytes
+                .cmp(&left.logical_bytes)
+                .then_with(|| left.file_type.cmp(right.file_type))
+        });
+        Ok(totals)
     }
 
     fn file_page(

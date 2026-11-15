@@ -13,6 +13,7 @@
 - Per-file and per-folder exclusions that persist across app restarts.
 - Exact duplicate findings with a duplicate-only view, verified group size, and SHA-256 evidence in File Inspector.
 - A reproducible 100,000-file traversal benchmark and a Windows x64 build and test workflow.
+- A file-type breakdown with counts and logical size for saved scans, labelled as indexed totals for cancelled scans.
 
 ### Fixed
 

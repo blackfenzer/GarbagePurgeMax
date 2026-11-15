@@ -14,8 +14,9 @@
 | Scan exclusions and exact duplicates | Added persistent path exclusions, staged SHA-256 and byte comparison, migration of existing history, and duplicate evidence in Scan Results and File Inspector. The Apple Silicon build, strict Clippy, 30 Rust tests, and 4 SQLite schema tests passed. |
 | Traversal benchmark | The release scan engine averaged 267,804 files/s with 2,272 KiB peak worker RSS and 6.5 µs median cancellation latency on the synthetic 100,000-file fixture. See [method and results](benchmarks.md). |
 | Windows CI ready | Added a Windows x64 MSVC workflow that builds the desktop executable and runs the workspace tests. Native Windows execution is pending. |
+| File-type breakdown | Saved scans show counts and logical bytes per type, from file extensions, with an Other fallback. Totals load off the UI thread and cover partial and reopened scans. On Apple Silicon, rustfmt, strict Clippy, 32 Rust tests, and the app build passed. Not yet checked in the running app. |
 | Remaining interactive checks | The desktop automation rejected the unpackaged macOS executable. Full-scan search, mouse and keyboard navigation, and picker and scan cancellation still need an interactive check. Build and run the desktop workflow on Windows 11 x64. |
 
 ## Next development session
 
-Follow the [v0.1 release gates](tasks.md#close-before-v01). The next implementation task is the saved scan’s file-type breakdown. Windows x64 build verification can proceed independently. Run final platform smoke tests and the end-to-end benchmark against the integrated build.
+Follow the [v0.1 release gates](tasks.md#close-before-v01). The next task is the macOS desktop smoke test, including the new file-type line in Scan Results. Windows x64 build verification can proceed independently. Run final platform smoke tests and the end-to-end benchmark against the integrated build.
