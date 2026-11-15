@@ -13,12 +13,12 @@
 - Per-file and per-folder exclusions that persist across app restarts.
 - Exact duplicate findings with a duplicate-only view, verified group size, and SHA-256 evidence in File Inspector.
 - A reproducible 100,000-file traversal benchmark and a Windows x64 build and test workflow.
-- An end-to-end benchmark of scanning, indexing, duplicate verification, review queries, and cancellation on 100,000 files.
-- A generated smoke-test fixture for the desktop workflow.
-- Review-only cleanup candidates for empty files, temporary files, incomplete downloads, installers, archives, and old downloads, each with its evidence.
-- A Review page with Exact duplicates and Similar images tabs, side-by-side previews, and the evidence for each match.
-- Similar-image detection for JPEG, PNG, GIF, WebP, BMP, and TIFF files using a difference hash, stored apart from exact duplicates.
 - A file-type breakdown with counts and logical size for saved scans, labelled as indexed totals for cancelled scans.
+- A generated smoke-test fixture for the desktop workflow.
+- An end-to-end benchmark of scanning, indexing, duplicate verification, review queries, and cancellation on 100,000 files.
+- Similar-image detection for JPEG, PNG, GIF, WebP, BMP, and TIFF files using a difference hash, stored apart from exact duplicates.
+- A Review page with Exact duplicates and Similar images tabs, side-by-side previews, and the evidence for each match.
+- Review-only cleanup candidates for empty files, temporary files, incomplete downloads, installers, archives, and old downloads, each with its evidence.
 
 ### Fixed
 
@@ -32,3 +32,12 @@
 - Apple Silicon build and workspace tests.
 - macOS app launch and scanning through the native folder picker.
 - Saved scan history after restarting the macOS app.
+- The macOS desktop smoke test on 120,023 generated files: picker and scan cancellation, paged search, Inspector navigation, exclusions, duplicate evidence, file-type totals, and reopened history.
+- The Windows x64 build and workspace tests on GitHub Actions `windows-2022`.
+- End-to-end release timings on 100,000 files: 3.2 s for mostly unique files and 8.1 s for duplicate-heavy files, with about 16.5 MiB peak memory. See [benchmarks](docs/benchmarks.md#end-to-end-benchmark).
+
+### Needs testing
+
+- The Windows 11 desktop smoke test and mounted-volume selection.
+- The Review page's three tabs in the running app.
+- The similar-image threshold on real photos.
