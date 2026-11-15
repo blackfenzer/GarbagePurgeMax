@@ -15,6 +15,7 @@ The release flow is **Select Folder → Scan → Analyze → Inspect Results** o
 - [x] Group same-size files and verify exact duplicates with staged SHA-256, byte comparison, and native-identity checks around reads.
 - [x] Show verified duplicate groups and the evidence in the Inspector. Include fixtures for empty files, same-size differences, replacements, symlinks, hard links, and permission errors.
 - [x] Confirm the native picker, an ordinary scan, and scan history after a restart on macOS.
+- [x] Pass the macOS desktop smoke test on the generated fixture. Mounted-volume selection is still unconfirmed.
 - [x] Measure scanner traversal throughput, worker memory, and cancellation on a generated 100,000-file tree. See [benchmarks](benchmarks.md).
 - [x] Add a native Windows x64 build and test workflow.
 
@@ -23,7 +24,7 @@ The release flow is **Select Folder → Scan → Analyze → Inspect Results** o
 | Order | Task | Acceptance |
 | --- | --- | --- |
 | 1 | [x] Add a file-type breakdown to the scan summary | Show counts and logical bytes for the current saved scan, with a fallback for files without a recognized extension. Keep categorization off the UI thread and cover partial and reopened scans. |
-| 2 | [ ] Run the macOS desktop smoke test | Use a generated tree to verify picker cancel, cancel during traversal or duplicate verification, full-scan search beyond the first page, keyboard and mouse Inspector navigation, exclusions, duplicate evidence, and reopened history. Check folder and supported mounted-volume selection through the existing picker. |
+| 2 | [x] Run the macOS desktop smoke test | Use a generated tree to verify picker cancel, cancel during traversal or duplicate verification, full-scan search beyond the first page, keyboard and mouse Inspector navigation, exclusions, duplicate evidence, and reopened history. Check folder and supported mounted-volume selection through the existing picker. |
 | 3 | [ ] Run native Windows x64 CI and the Windows 11 desktop smoke test | Link the locked app, pass the shared fixture suite, and repeat the macOS smoke scenarios using Windows paths and a disposable folder or test volume. Record the runner, Windows version, and any platform-specific limits. |
 | 4 | [ ] Measure the end-to-end flow on 100,000+ files | Include SQLite indexing, duplicate-heavy and mostly unique inputs, search and paging during review, and a cancellation check. Record per-phase timing, peak process memory, and responsiveness separately from the traversal benchmark. Record warm and cold-cache observations where reproducible. |
 | 5 | [ ] Document the v0.1 release and portfolio demo | Update setup, platform limits and measured results. Capture screenshots and a short read-only workflow demo once both platforms pass. Record the build artifacts and link the architecture and benchmark evidence. |
