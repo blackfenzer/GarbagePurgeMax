@@ -5680,6 +5680,7 @@ dependencies = [
 name = "scan-engine"
 version = "0.1.0"
 dependencies = [
+ "image",
  "libc",
  "sha2 0.11.1",
  "tempfile",

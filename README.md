@@ -38,7 +38,8 @@ The app saves file paths and metadata locally under `~/Library/Application Suppo
 - [`docs/architecture.md`](docs/architecture.md) records the folder structure, dependency decisions, and scanning boundaries.
 - [`docs/progress.md`](docs/progress.md) tracks implementation and build verification.
 - [`docs/tasks.md`](docs/tasks.md) tracks release scope and acceptance from v0.1 through v1.0. [`AGENTS.md`](AGENTS.md) documents folder ownership and coding guidelines. [`CHANGELOG.md`](CHANGELOG.md) records user-facing changes.
-- [`docs/benchmarks.md`](docs/benchmarks.md) describes how to reproduce the traversal benchmark and interpret its results.
+- [`docs/benchmarks.md`](docs/benchmarks.md) describes how to reproduce the traversal and end-to-end benchmarks and interpret their results.
+- [`docs/image-similarity.md`](docs/image-similarity.md) compares perceptual image hashes for the planned Similar Images view.
 - `references/` holds optional local clones of the research projects and is ignored by Git.
 
 To generate the synthetic tree used for the desktop smoke test, run `cargo run --locked --release -p scan-engine --example smoke_fixture -- <new folder>`. On macOS, run `chmod 755 <folder>/locked` before deleting it.
