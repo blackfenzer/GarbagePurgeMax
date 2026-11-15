@@ -1,0 +1,11 @@
+[package]
+name = "scan-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+walkdir = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
