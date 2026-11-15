@@ -2,6 +2,7 @@ mod exclusions;
 mod history;
 mod overview;
 mod results;
+mod review;
 mod scan;
 mod storage;
 
@@ -18,6 +19,7 @@ enum Page {
     Overview,
     Results,
     History,
+    Review,
 }
 
 pub(crate) struct Workspace {
@@ -26,6 +28,7 @@ pub(crate) struct Workspace {
     results: results::Results,
     scan: scan::ScanSession,
     history: history::History,
+    review: review::Review,
 }
 
 impl Render for Workspace {
@@ -33,6 +36,7 @@ impl Render for Workspace {
         let menu = SidebarMenu::new()
             .child(self.navigation_item(Page::Overview, "Overview", IconName::LayoutDashboard, cx))
             .child(self.navigation_item(Page::Results, "Scan Results", IconName::FolderOpen, cx))
+            .child(self.navigation_item(Page::Review, "Review", IconName::Copy, cx))
             .child(self.navigation_item(Page::History, "Scan History", IconName::Calendar, cx));
 
         div()
@@ -56,6 +60,7 @@ impl Render for Workspace {
                         .render(self.scan.report.as_ref(), cx)
                         .into_any_element(),
                     Page::History => self.history.render(cx).into_any_element(),
+                    Page::Review => self.review.render(cx).into_any_element(),
                 }),
             )
     }
@@ -69,6 +74,7 @@ impl Workspace {
             results: results::Results::new(window, cx),
             scan: scan::ScanSession::default(),
             history: history::History::default(),
+            review: review::Review::default(),
         }
     }
 
@@ -84,8 +90,13 @@ impl Workspace {
             .active(self.page == page)
             .on_click(cx.listener(move |workspace, _, _, cx| {
                 workspace.page = page;
-                if page == Page::History {
-                    workspace.history.load(0, cx);
+                match page {
+                    Page::History => workspace.history.load(0, cx),
+                    Page::Review => {
+                        let scan = workspace.results.saved_scan().cloned();
+                        workspace.review.open(scan, cx);
+                    }
+                    Page::Overview | Page::Results => {}
                 }
                 cx.notify();
             }))

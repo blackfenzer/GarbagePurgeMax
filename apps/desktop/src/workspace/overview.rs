@@ -18,7 +18,7 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl Int
             if active.cancelling {
                 "Cancelling scan"
             } else if active.analyzing {
-                "Checking duplicates"
+                "Checking duplicates and similar images"
             } else {
                 "Scanning folder"
             },

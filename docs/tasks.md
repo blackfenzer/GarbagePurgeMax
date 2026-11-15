@@ -41,7 +41,7 @@ Run final release checks on the integrated build. If the desktop automation cann
 ## v0.2 · Analysis and discovery
 
 - [x] Evaluate perceptual image hashes on a fixture set with crops, resizes, edits, and visually distinct images. Keep similarity evidence separate from verified exact matches. See [image similarity](image-similarity.md): use a difference hash at ≤ 6 and confirm it on real photos.
-- [ ] Build Similar Images and Duplicate Review views with side-by-side previews, group details, and evidence.
+- [x] Build Similar Images and Duplicate Review views with side-by-side previews, group details, and evidence. **Needs testing:** an interactive check of the Review page, and the similarity threshold on real photos.
 - [ ] Add evidence-backed candidates for old downloads, installers, archives, known temporary files, and empty items.
 - [ ] Add repeatable scan profiles, richer filters and sorting, and scan export. Preserve path, type, size, age, group, confidence, risk, status, and directory semantics where applicable.
 - [ ] Add incremental scan caching. Reuse results only after revalidating file identity, size, and timestamps. Measure cold and warm scans, hashing throughput, CPU and I/O load, and cache effectiveness.

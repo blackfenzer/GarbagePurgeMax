@@ -16,9 +16,11 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/workspace/history.rs` | Loads saved scans and opens their results. | In source |
 | `apps/desktop/src/workspace/storage.rs` | Resolves the app data directory and keeps it out of scans. | In source |
 | `apps/desktop/src/workspace/exclusions.rs` | Stores excluded paths and resolves them relative to the selected scan root. | In source |
+| `apps/desktop/src/workspace/review.rs` | Lists exact-duplicate and similar-image groups for the open scan in separate tabs, with side-by-side previews and evidence. | In source |
 | `apps/desktop/src/workspace/results/inspector.rs` | Presents metadata and finding evidence for the selected row. | In source |
 | `crates/scan-engine/src/lib.rs` | Owns traversal, exclusions, file metadata and error reporting. | In source |
 | `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates. Its platform code revalidates file identity before and after reads. | In source |
+| `crates/scan-engine/src/similar_images.rs` | Decodes supported images read-only on every core, computes 64-bit difference hashes, and groups images within 6 bits of a reference image. | In source |
 | `crates/scan-engine/src/file_types.rs` | Names a broad file type from the path extension, with an Other fallback. | In source |
 | `crates/scan-engine/tests` | Exercises deterministic fixture trees in temporary directories. | In source |
 | `crates/scan-store` | Owns the SQLite migration, transactional writer, and queries for scan history and file search. | In source |
@@ -51,5 +53,7 @@ The schema stores scan summaries and file records in separate tables. Each recor
 The writer enables foreign keys on every connection and records each scan in one transaction. Completing or cancelling a scan commits its summary and available rows. Dropping an incomplete transaction rolls back its rows. History queries hide running scans. File search checks the entire saved scan for a literal path substring and folds ASCII case. File pages have a stable size order with the native key as a tiebreaker. Desktop queries run in the background with bundled SQLite through `rusqlite`.
 
 File-type totals are computed from the saved file rows when a scan opens. They take about 15 ms for 100,000 files, so no type column is stored.
+
+After exact duplicates are verified, the scan decodes JPEG, PNG, GIF, WebP, BMP, and TIFF files, hashes them, and saves similar-image groups in the same scan transaction. Each image joins the closest earlier reference within 6 bits or starts a new group, so every saved distance is measured to the reference. The v3 migration stores these groups in their own tables, apart from byte-verified duplicates. Byte-identical images appear in both views, labelled as an exact duplicate in one and a distance-0 similar image in the other. Decode failures are counted on the scan. Previews are loaded by GPUI's image element off the UI thread. See [image similarity](image-similarity.md) for how the hash and threshold were chosen.
 
 The v2 migration keeps existing scans and adds duplicate groups and membership. Older scans need a new scan to generate findings. Cancelling verification keeps groups completed before cancellation and marks verification incomplete.

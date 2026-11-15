@@ -65,6 +65,10 @@ impl Results {
         self.saved.is_some()
     }
 
+    pub(super) fn saved_scan(&self) -> Option<&scan_store::SavedScan> {
+        self.saved.as_ref().map(|saved| &saved.scan)
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search file paths"));
         let table = cx.new(|cx| {

@@ -13,3 +13,6 @@ log = "0.4"
 scan-engine = { path = "../../crates/scan-engine" }
 scan-store = { path = "../../crates/scan-store" }
 tempfile = "3"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

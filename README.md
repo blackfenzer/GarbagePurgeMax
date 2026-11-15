@@ -26,6 +26,8 @@ The workspace lockfile pins the resolved dependencies. On macOS, GPUI Kit 0.9.1 
 
 In the window, choose **Overview → Choose folder**. The dashboard shows scan progress and offers **Cancel scan**. **Scan Results** lists the indexed files in descending size order, 100 per page, flags files of at least 1 GiB, and totals files and logical size by type. Use **Search file paths** to search the full saved scan by filename or folder. Click a row or focus the table and use the arrow keys to inspect metadata. **Scan History** opens past scans, including partial results from cancelled scans.
 
+Open **Review** to compare groups from the scan open in Scan Results. **Exact duplicates** shows byte-identical files with their SHA-256 evidence. **Similar images** shows JPEG, PNG, GIF, WebP, BMP, and TIFF images that look alike, side by side, with each image's difference from the group's reference image. Similar images are a heuristic and are never treated as copies.
+
 Use **Scan exclusions** on Overview to select files or folders to skip in future scans. After indexing, Storage Clinic checks same-size files for exact duplicates. Use **Duplicates only** in Scan Results to review matches and see their SHA-256 hashes in File Inspector. Reopen older scans for their indexed files, or run a new scan to add duplicate findings.
 
 The app saves file paths and metadata locally under `~/Library/Application Support/Storage Clinic` on macOS or `%LOCALAPPDATA%\Storage Clinic` on Windows. If saving fails, the results view keeps the 100 largest files in a temporary preview.
@@ -54,7 +56,7 @@ To generate the synthetic tree used for the desktop smoke test, run `cargo run -
 On a 100,000-file tree, the release pipeline scanned, indexed, and verified duplicates in 3.2 s for mostly unique files and 8.1 s for a duplicate-heavy tree. Peak memory was about 16.5 MiB, review queries took under 47 ms, and cancellation returned within 14 ms. Traversal alone averaged 267,804 files/s. See [benchmarks](docs/benchmarks.md) for the method and the [architecture](docs/architecture.md) for the design.
 
 - Scans read files and never change them. Cleanup arrives in v0.3.
-- File types come from extensions only. Duplicates are exact byte matches. Similar images are planned for v0.2.
+- File types come from extensions only. Duplicates are exact byte matches. Similar images use a 64-bit difference hash, so heavy crops, mirrored, and rotated copies are not found, and HEIC and RAW photos are not read.
 - Logical sizes include every hard-linked name. Duplicate verification counts each file identity once. Physical space on disk is not estimated yet.
 - Each scan holds the database write lock until it finishes, so a second app instance cannot save a scan at the same time. The app quits when its window closes.
 - Older scans need a new scan to add duplicate findings. The app shows the first scan error alongside the error counts.

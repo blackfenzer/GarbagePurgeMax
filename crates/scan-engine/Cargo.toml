@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 sha2 = "0.11"
 walkdir = "2.5"
 
@@ -15,5 +16,4 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 tempfile = "3"

@@ -12,7 +12,7 @@ class SchemaTests(unittest.TestCase):
         self.addCleanup(self.db.close)
         schema = "\n".join(
             (SQL / migration).read_text(encoding="utf-8")
-            for migration in ("001_initial.sql", "002_exact_duplicates.sql")
+            for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql")
         )
         self.db.executescript(f"PRAGMA foreign_keys = ON; BEGIN;\n{schema}\nCOMMIT;")
 
@@ -44,7 +44,7 @@ class SchemaTests(unittest.TestCase):
         ).fetchall()
 
     def test_history_includes_cancelled_scans_and_excludes_in_progress_scans(self):
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (2,))
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (3,))
         completed, cancelled, _ = (self.add_scan() for _ in range(3))
         self.finish_scan(completed, "completed")
         self.finish_scan(cancelled, "cancelled")
@@ -83,6 +83,23 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(self.list_files(scan), [])
         with self.assertRaises(sqlite3.IntegrityError):
             self.add_file(scan, b"a", "notes.txt", 120)
+
+    def test_similar_members_need_indexed_files_and_a_bounded_distance(self):
+        scan = self.add_scan()
+        self.add_file(scan, b"a.jpg", "a.jpg", 10)
+        self.db.execute(
+            "INSERT INTO similar_image_groups (scan_id, group_id, file_count) VALUES (?, 1, 2)",
+            (scan,),
+        )
+        insert = """INSERT INTO similar_image_members
+                    (scan_id, path_key, group_id, position, difference_hash, distance)
+                    VALUES (?, ?, 1, ?, -2, ?)"""
+        self.db.execute(insert, (scan, b"a.jpg", 0, 0))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(insert, (scan, b"missing.jpg", 1, 3))
+        self.add_file(scan, b"b.jpg", "b.jpg", 10)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(insert, (scan, b"b.jpg", 1, 65))
 
 
 if __name__ == "__main__":

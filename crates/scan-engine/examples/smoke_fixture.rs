@@ -1,5 +1,6 @@
 //! Builds the synthetic tree for the desktop smoke test. Run with a new folder path:
 //! `cargo run --locked --release -p scan-engine --example smoke_fixture -- <folder>`
+//! Its `images/` folder holds one similar-image group of three and one exact image duplicate.
 use std::env;
 use std::fs::{self, File};
 use std::io;
@@ -65,9 +66,44 @@ fn main() -> io::Result<()> {
         )?;
     }
 
+    write_images(&root.join("images"))?;
     write_unreadable_folder(&root.join("locked"))?;
     println!("Smoke fixture ready at {}", root.display());
     Ok(())
+}
+
+/// Two scenes: one with resized, recompressed, and brightened copies (one similar group),
+/// one with a byte-identical copy (an exact duplicate), plus a file that cannot be decoded.
+fn write_images(folder: &Path) -> io::Result<()> {
+    use image::imageops::{self, FilterType};
+    use image::{Rgb, RgbImage};
+
+    fs::create_dir(folder)?;
+    let scene = |darkening: bool| {
+        RgbImage::from_fn(640, 480, |x, y| {
+            let shade = (x * 255 / 640) as u8;
+            let shade = if darkening { 255 - shade } else { shade };
+            let in_circle = x.abs_diff(320).pow(2) + y.abs_diff(240).pow(2) < 120 * 120;
+            Rgb(if in_circle {
+                [40, 120, 220]
+            } else {
+                [shade, shade / 2, 90]
+            })
+        })
+    };
+    let save =
+        |image: &RgbImage, name: &str| image.save(folder.join(name)).map_err(io::Error::other);
+    let sunrise = scene(false);
+    save(&sunrise, "sunrise.png")?;
+    save(
+        &imageops::resize(&sunrise, 320, 240, FilterType::Lanczos3),
+        "sunrise-small.jpg",
+    )?;
+    save(&imageops::brighten(&sunrise, 30), "sunrise-brighter.png")?;
+    let sunset = scene(true);
+    save(&sunset, "sunset.png")?;
+    save(&sunset, "sunset copy.png")?;
+    fs::write(folder.join("not-really.png"), "not an image")
 }
 
 #[cfg(unix)]

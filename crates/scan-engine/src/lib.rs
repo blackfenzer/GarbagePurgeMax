@@ -8,9 +8,14 @@ use walkdir::WalkDir;
 
 mod duplicates;
 mod file_types;
+mod similar_images;
 
 pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
 pub use file_types::{OTHER_FILE_TYPE, file_type};
+pub use similar_images::{
+    SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis, SimilarImageGroup, difference_hash,
+    find_similar_images, is_hashable_image,
+};
 
 #[derive(Debug)]
 pub struct FileRecord {

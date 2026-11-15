@@ -3,8 +3,8 @@ use std::sync::Barrier;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::Connection;
-use scan_engine::{FileRecord, ScanProgress, ScanSummary};
-use scan_store::{DuplicateEvidence, FileTypeTotal, ScanStore};
+use scan_engine::{FileRecord, ScanProgress, ScanSummary, SimilarImage};
+use scan_store::{DuplicateEvidence, FileTypeTotal, ReviewGroup, ScanStore, SimilarImageEvidence};
 
 #[test]
 fn restores_partial_scan_metadata_and_paginates_literal_search()
@@ -131,6 +131,8 @@ fn migrates_legacy_history_when_opened_concurrently() -> Result<(), Box<dyn std:
         assert!(!legacy.duplicates_analyzed);
         assert_eq!(legacy.duplicate_group_count, 0);
         assert_eq!(legacy.duplicate_error_count, 0);
+        assert!(!legacy.similar_images_analyzed);
+        assert_eq!(legacy.similar_group_count, 0);
     }
     let store = ScanStore::open(&db)?;
     let files = store.files(1, "", 10, 0)?;
@@ -299,6 +301,81 @@ fn explains_a_scan_blocked_by_another_window() -> Result<(), Box<dyn std::error:
     assert_eq!(
         error.to_string(),
         "another Storage Clinic window is saving a scan. Close it and scan again"
+    );
+    Ok(())
+}
+
+#[test]
+fn lists_review_groups_and_keeps_similarity_evidence() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let db = directory.path().join("scans.sqlite3");
+    let mut store = ScanStore::open(&db)?;
+    let mut writer = store.begin_scan(directory.path(), 1_000)?;
+    let files = [
+        file("small-a.txt", 5),
+        file("small-b.txt", 5),
+        file("large-a.bin", 40),
+        file("large-b.bin", 40),
+        file("photo.jpg", 30),
+        file("photo-small.jpg", 10),
+    ];
+    for record in &files {
+        writer.insert_file(record)?;
+    }
+    writer.insert_duplicate_group(&paths(&files[..2]), &[1; 32])?;
+    writer.insert_duplicate_group(&paths(&files[2..4]), &[2; 32])?;
+    let high_bit_hash = u64::MAX - 1;
+    writer.insert_similar_image_group(&[
+        SimilarImage {
+            path: files[4].path.clone(),
+            hash: high_bit_hash,
+            distance: 0,
+        },
+        SimilarImage {
+            path: files[5].path.clone(),
+            hash: high_bit_hash ^ 0b101,
+            distance: 2,
+        },
+    ])?;
+    writer.mark_similar_images_analyzed(1)?;
+    let scan = writer.finish(&summary(6, false), 0)?;
+    assert!(scan.similar_images_analyzed);
+    drop(store);
+
+    let store = ScanStore::open(&db)?;
+    let saved = &store.scans(1, 0)?[0];
+    assert_eq!((saved.similar_group_count, saved.image_error_count), (1, 1));
+    let group = |group_id, file_count, logical_bytes| ReviewGroup {
+        group_id,
+        file_count,
+        logical_bytes,
+    };
+    assert_eq!(
+        store.duplicate_groups(scan.id, 10, 0)?,
+        [group(2, 2, 80), group(1, 2, 10)]
+    );
+    assert_eq!(store.duplicate_groups(scan.id, 1, 1)?, [group(1, 2, 10)]);
+    assert_eq!(
+        paths(&store.duplicate_group_files(scan.id, 2)?),
+        paths(&files[2..4])
+    );
+    assert_eq!(
+        store.similar_image_groups(scan.id, 10, 0)?,
+        [group(1, 2, 40)]
+    );
+    let members = store.similar_image_group_files(scan.id, 1)?;
+    assert_eq!(members[0].0.path, files[4].path);
+    assert_eq!(
+        members[1].1,
+        SimilarImageEvidence {
+            difference_hash: high_bit_hash ^ 0b101,
+            distance: 2
+        }
+    );
+    assert!(
+        store
+            .duplicate_evidence(scan.id, &[file("photo.jpg", 30)])?
+            .is_empty()
     );
     Ok(())
 }

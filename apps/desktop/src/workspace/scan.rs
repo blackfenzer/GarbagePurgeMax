@@ -5,7 +5,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, PathPromptOptions};
-use scan_engine::{FileRecord, ScanProgress, ScanSummary, scan_directory, verify_duplicate_group};
+use scan_engine::{
+    FileRecord, ScanProgress, ScanSummary, find_similar_images, is_hashable_image, scan_directory,
+    verify_duplicate_group,
+};
 use scan_store::{SavedScan, ScanWriter};
 
 use super::{Page, Workspace, exclusions, storage};
@@ -199,6 +202,7 @@ fn inspect_and_save(
                     None
                 }
             });
+    let mut image_paths = Vec::new();
     let mut report = inspect_folder(
         root,
         &exclusions,
@@ -211,6 +215,9 @@ fn inspect_and_save(
             })
         },
         |file| {
+            if is_hashable_image(&file.path) {
+                image_paths.push(file.path.clone());
+            }
             if let Some(current) = &mut writer
                 && let Err(error) = current.insert_file(file)
             {
@@ -228,7 +235,9 @@ fn inspect_and_save(
                 progress: report.summary.progress,
                 analyzing: true,
             });
-            verify_indexed_duplicates(&mut writer, &mut report.summary, cancel)
+            verify_indexed_duplicates(&mut writer, &mut report.summary, cancel).and_then(|()| {
+                group_similar_images(&mut writer, &image_paths, &mut report.summary, cancel)
+            })
         };
         let saved = verification.and_then(|()| {
             writer
@@ -284,6 +293,32 @@ fn verify_indexed_duplicates(
     }
     summary.cancelled = true;
     Ok(())
+}
+
+/// Groups perceptually similar images after exact duplicates are saved. Decode failures
+/// are counted on the scan, not reported as traversal errors.
+fn group_similar_images(
+    writer: &mut ScanWriter<'_>,
+    image_paths: &[PathBuf],
+    summary: &mut ScanSummary,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    if summary.cancelled {
+        return Ok(());
+    }
+    let analysis = find_similar_images(image_paths, cancel);
+    if analysis.cancelled {
+        summary.cancelled = true;
+        return Ok(());
+    }
+    for group in &analysis.groups {
+        writer
+            .insert_similar_image_group(&group.members)
+            .map_err(io::Error::other)?;
+    }
+    writer
+        .mark_similar_images_analyzed(analysis.errors)
+        .map_err(io::Error::other)
 }
 
 fn inspect_folder(
@@ -474,6 +509,47 @@ mod tests {
     }
 
     #[test]
+    fn persists_similar_images_apart_from_exact_duplicates() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let database = root.path().join("app-data/scans.sqlite3");
+        let scene = image::RgbImage::from_fn(240, 160, |x, y| {
+            let in_square = (60..140).contains(&x) && (40..120).contains(&y);
+            image::Rgb(if in_square {
+                [220, 30, 30]
+            } else {
+                [(x + y) as u8; 3]
+            })
+        });
+        let smaller =
+            image::imageops::resize(&scene, 120, 80, image::imageops::FilterType::Triangle);
+        scene
+            .save(root.path().join("original.png"))
+            .map_err(io::Error::other)?;
+        smaller
+            .save(root.path().join("smaller.png"))
+            .map_err(io::Error::other)?;
+        std::fs::write(root.path().join("renamed.png"), "not an image")?;
+
+        let report = inspect_and_save(
+            root.path().into(),
+            Ok(database.clone()),
+            &AtomicBool::new(false),
+            |_| {},
+        )?;
+        let saved = report.saved.expect("scan saved");
+        assert!(saved.similar_images_analyzed);
+        assert_eq!(saved.similar_group_count, 1);
+        assert_eq!(saved.image_error_count, 1);
+        assert_eq!(saved.duplicate_group_count, 0);
+        let store = storage::open_at(&database)?;
+        let members = store
+            .similar_image_group_files(saved.id, 1)
+            .map_err(io::Error::other)?;
+        assert_eq!(members.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn cancelling_duplicate_verification_keeps_the_file_index() -> io::Result<()> {
         let root = tempfile::tempdir()?;
         let database = root.path().join("app-data/scans.sqlite3");
@@ -494,6 +570,7 @@ mod tests {
         let saved = report.saved.unwrap();
         assert!(saved.cancelled);
         assert!(!saved.duplicates_analyzed);
+        assert!(!saved.similar_images_analyzed);
         assert_eq!(saved.duplicate_group_count, 0);
         let store = storage::open_at(&database)?;
         assert_eq!(

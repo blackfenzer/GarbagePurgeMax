@@ -6,6 +6,7 @@ use std::time::Instant;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::{self, FilterType};
 use image::{GrayImage, Rgb, RgbImage};
+use scan_engine::difference_hash;
 
 const BASE_IMAGES: u64 = 16;
 const WIDTH: u32 = 640;
@@ -270,15 +271,6 @@ fn average_hash(image: &GrayImage) -> u64 {
     let small = imageops::resize(image, 8, 8, FilterType::Triangle);
     let mean = small.pixels().map(|pixel| u32::from(pixel[0])).sum::<u32>() / 64;
     bits(small.pixels().map(|pixel| u32::from(pixel[0]) > mean))
-}
-
-/// One bit per horizontal neighbor pair in a 9×8 thumbnail: brightness falls to the right.
-fn difference_hash(image: &GrayImage) -> u64 {
-    let small = imageops::resize(image, 9, 8, FilterType::Triangle);
-    bits((0..8).flat_map(|y| {
-        let small = &small;
-        (0..8).map(move |x| small.get_pixel(x, y)[0] > small.get_pixel(x + 1, y)[0])
-    }))
 }
 
 /// The low-frequency 8×8 corner of a 32×32 DCT, compared with its median (pHash).

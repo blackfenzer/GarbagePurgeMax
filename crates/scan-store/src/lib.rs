@@ -9,22 +9,46 @@ use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, named_params, params,
     types::Type,
 };
-use scan_engine::{FileRecord, ScanProgress, ScanSummary, file_type};
+use scan_engine::{FileRecord, ScanProgress, ScanSummary, SimilarImage, file_type};
 
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
-const INITIAL_SCHEMA: &str = include_str!("../sql/001_initial.sql");
-const EXACT_DUPLICATES_SCHEMA: &str = include_str!("../sql/002_exact_duplicates.sql");
-const SCHEMA_VERSION: i64 = 2;
+/// Applied in order. `user_version` counts how many have run.
+const MIGRATIONS: [&str; 3] = [
+    include_str!("../sql/001_initial.sql"),
+    include_str!("../sql/002_exact_duplicates.sql"),
+    include_str!("../sql/003_similar_images.sql"),
+];
+const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 const LIST_SCANS: &str = include_str!("../sql/list_scans.sql");
 const LIST_FILES: &str = include_str!("../sql/list_files.sql");
 const DUPLICATE_CANDIDATES: &str = include_str!("../sql/duplicate_candidates.sql");
 const LIST_DUPLICATE_FILES: &str = include_str!("../sql/list_duplicate_files.sql");
+const LIST_DUPLICATE_GROUPS: &str = include_str!("../sql/list_duplicate_groups.sql");
+const LIST_DUPLICATE_GROUP_FILES: &str = include_str!("../sql/list_duplicate_group_files.sql");
+const LIST_SIMILAR_IMAGE_GROUPS: &str = include_str!("../sql/list_similar_image_groups.sql");
+const LIST_SIMILAR_IMAGE_GROUP_FILES: &str =
+    include_str!("../sql/list_similar_image_group_files.sql");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DuplicateEvidence {
     pub file_count: u64,
     pub hash: [u8; 32],
+}
+
+/// A duplicate or similar-image group, summarized for the review list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewGroup {
+    pub group_id: u64,
+    pub file_count: u64,
+    pub logical_bytes: u64,
+}
+
+/// Why an image was grouped: its difference hash and distance from the group's reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SimilarImageEvidence {
+    pub difference_hash: u64,
+    pub distance: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,6 +71,9 @@ pub struct SavedScan {
     pub duplicates_analyzed: bool,
     pub duplicate_group_count: u64,
     pub duplicate_error_count: u64,
+    pub similar_images_analyzed: bool,
+    pub similar_group_count: u64,
+    pub image_error_count: u64,
 }
 
 pub struct ScanStore(Connection);
@@ -57,18 +84,16 @@ impl ScanStore {
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let version = schema_version(&connection)?;
-        if matches!(version, 0 | 1) {
+        if (0..SCHEMA_VERSION).contains(&version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             // Another app instance may have migrated while this connection waited.
-            match schema_version(&transaction)? {
-                0 => {
-                    transaction.execute_batch(INITIAL_SCHEMA)?;
-                    transaction.execute_batch(EXACT_DUPLICATES_SCHEMA)?;
-                }
-                1 => transaction.execute_batch(EXACT_DUPLICATES_SCHEMA)?,
-                SCHEMA_VERSION => {}
-                version => return Err(incompatible_schema(version)),
+            let version = schema_version(&transaction)?;
+            if !(0..=SCHEMA_VERSION).contains(&version) {
+                return Err(incompatible_schema(version));
+            }
+            for migration in &MIGRATIONS[version as usize..] {
+                transaction.execute_batch(migration)?;
             }
             transaction.commit()?;
         } else if version != SCHEMA_VERSION {
@@ -118,6 +143,9 @@ impl ScanStore {
             duplicates_analyzed: false,
             duplicate_group_count: 0,
             duplicate_error_count: 0,
+            similar_images_analyzed: false,
+            similar_group_count: 0,
+            image_error_count: 0,
         };
         Ok(ScanWriter { transaction, scan })
     }
@@ -146,6 +174,9 @@ impl ScanStore {
                         duplicates_analyzed: row.get(13)?,
                         duplicate_group_count: unsigned_integer(row, 14)?,
                         duplicate_error_count: unsigned_integer(row, 15)?,
+                        similar_images_analyzed: row.get(16)?,
+                        similar_group_count: unsigned_integer(row, 17)?,
+                        image_error_count: unsigned_integer(row, 18)?,
                     })
                 },
             )?
@@ -198,6 +229,91 @@ impl ScanStore {
             }
         }
         Ok(evidence)
+    }
+
+    /// Exact duplicate groups, largest total logical size first.
+    pub fn duplicate_groups(
+        &self,
+        scan_id: i64,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<ReviewGroup>> {
+        self.review_groups(LIST_DUPLICATE_GROUPS, scan_id, limit, offset)
+    }
+
+    pub fn duplicate_group_files(
+        &self,
+        scan_id: i64,
+        group_id: u64,
+    ) -> rusqlite::Result<Vec<FileRecord>> {
+        let mut statement = self.0.prepare_cached(LIST_DUPLICATE_GROUP_FILES)?;
+        statement
+            .query_map(
+                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?},
+                file_record,
+            )?
+            .collect()
+    }
+
+    /// Similar-image groups, largest total logical size first.
+    pub fn similar_image_groups(
+        &self,
+        scan_id: i64,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<ReviewGroup>> {
+        self.review_groups(LIST_SIMILAR_IMAGE_GROUPS, scan_id, limit, offset)
+    }
+
+    /// Group members with their evidence, reference image first.
+    pub fn similar_image_group_files(
+        &self,
+        scan_id: i64,
+        group_id: u64,
+    ) -> rusqlite::Result<Vec<(FileRecord, SimilarImageEvidence)>> {
+        let mut statement = self.0.prepare_cached(LIST_SIMILAR_IMAGE_GROUP_FILES)?;
+        statement
+            .query_map(
+                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?},
+                |row| {
+                    let hash: i64 = row.get(8)?;
+                    Ok((
+                        file_record(row)?,
+                        SimilarImageEvidence {
+                            // SQLite integers are signed. The hash keeps its 64 bits.
+                            difference_hash: hash as u64,
+                            distance: row.get(9)?,
+                        },
+                    ))
+                },
+            )?
+            .collect()
+    }
+
+    fn review_groups(
+        &self,
+        query: &str,
+        scan_id: i64,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<ReviewGroup>> {
+        let mut statement = self.0.prepare_cached(query)?;
+        statement
+            .query_map(
+                named_params! {
+                    ":scan_id": scan_id,
+                    ":limit": limit,
+                    ":offset": sqlite_integer(offset)?
+                },
+                |row| {
+                    Ok(ReviewGroup {
+                        group_id: unsigned_integer(row, 0)?,
+                        file_count: unsigned_integer(row, 1)?,
+                        logical_bytes: unsigned_integer(row, 2)?,
+                    })
+                },
+            )?
+            .collect()
     }
 
     /// Totals indexed files by type, largest first. Cancelled scans cover the indexed part.
@@ -336,6 +452,51 @@ impl ScanWriter<'_> {
         Ok(())
     }
 
+    pub fn insert_similar_image_group(&mut self, members: &[SimilarImage]) -> rusqlite::Result<()> {
+        let group_id = self.scan.similar_group_count + 1;
+        let group_key = sqlite_integer(group_id)?;
+        let savepoint = self.transaction.savepoint()?;
+        savepoint.execute(
+            "INSERT INTO similar_image_groups (scan_id, group_id, file_count) VALUES (?1, ?2, ?3)",
+            params![
+                self.scan.id,
+                group_key,
+                sqlite_integer(members.len() as u64)?
+            ],
+        )?;
+        {
+            let mut statement = savepoint.prepare_cached(
+                "INSERT INTO similar_image_members
+                     (scan_id, path_key, group_id, position, difference_hash, distance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (position, member) in members.iter().enumerate() {
+                statement.execute(params![
+                    self.scan.id,
+                    encode_path(&member.path),
+                    group_key,
+                    sqlite_integer(position as u64)?,
+                    // SQLite integers are signed. Keep all 64 hash bits.
+                    member.hash as i64,
+                    member.distance,
+                ])?;
+            }
+        }
+        savepoint.commit()?;
+        self.scan.similar_group_count = group_id;
+        Ok(())
+    }
+
+    pub fn mark_similar_images_analyzed(&mut self, error_count: u64) -> rusqlite::Result<()> {
+        self.transaction.execute(
+            "UPDATE scans SET similar_images_analyzed = 1, image_error_count = ?1 WHERE id = ?2",
+            params![sqlite_integer(error_count)?, self.scan.id],
+        )?;
+        self.scan.similar_images_analyzed = true;
+        self.scan.image_error_count = error_count;
+        Ok(())
+    }
+
     pub fn finish(
         mut self,
         summary: &ScanSummary,
@@ -348,12 +509,14 @@ impl ScanWriter<'_> {
             "completed"
         };
         self.scan.duplicates_analyzed &= !summary.cancelled;
+        self.scan.similar_images_analyzed &= !summary.cancelled;
         self.transaction.execute(
             "UPDATE scans SET finished_unix_ms = ?1, status = ?2, files = ?3, directories = ?4,
                               logical_bytes = ?5, large_files = ?6, skipped = ?7, errors = ?8,
                               first_error = ?9, duplicates_analyzed = ?10,
-                              duplicate_group_count = ?11
-             WHERE id = ?12",
+                              duplicate_group_count = ?11, similar_images_analyzed = ?12,
+                              similar_group_count = ?13
+             WHERE id = ?14",
             params![
                 unix_millis(SystemTime::now())?,
                 status,
@@ -366,6 +529,8 @@ impl ScanWriter<'_> {
                 summary.first_error,
                 self.scan.duplicates_analyzed,
                 sqlite_integer(self.scan.duplicate_group_count)?,
+                self.scan.similar_images_analyzed,
+                sqlite_integer(self.scan.similar_group_count)?,
                 self.scan.id,
             ],
         )?;
