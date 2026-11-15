@@ -161,7 +161,8 @@ mod tests {
         let database = root.path().join("app-data/scans.sqlite3");
         let scanned = root.path().join("scanned");
         fs::create_dir(&scanned)?;
-        fs::write(scanned.join("=sum(1),\"x\".txt"), "same")?;
+        // Windows forbids `"` in file names, so quote doubling is checked on `csv_cell` below.
+        fs::write(scanned.join("=sum(1),x.txt"), "same")?;
         fs::write(scanned.join("copy.txt"), "same")?;
         fs::write(scanned.join("empty"), "")?;
 
@@ -181,8 +182,9 @@ mod tests {
         let lines: Vec<_> = csv.lines().collect();
         assert_eq!(lines[0], HEADER);
         assert_eq!(lines.len(), 4);
-        // The name cell is defused with an apostrophe, then quoted for its comma and quotes.
-        assert!(csv.contains(",\"'=sum(1),\"\"x\"\".txt\","), "{csv}");
+        // The name cell is defused with an apostrophe, then quoted for its comma.
+        assert!(csv.contains(",\"'=sum(1),x.txt\","), "{csv}");
+        assert_eq!(csv_cell("say \"hi\""), "\"say \"\"hi\"\"\"");
         let empty = lines.iter().find(|line| line.contains("empty,")).unwrap();
         assert!(
             empty.ends_with(",Empty files,0 bytes when scanned,completed"),
