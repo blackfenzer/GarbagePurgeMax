@@ -34,7 +34,7 @@ pub(super) struct ActiveScan {
 }
 
 #[derive(Clone, Copy, Default)]
-struct ScanActivity {
+pub(super) struct ScanActivity {
     progress: ScanProgress,
     analyzing: bool,
 }
@@ -176,7 +176,7 @@ impl Workspace {
     }
 }
 
-fn inspect_and_save(
+pub(super) fn inspect_and_save(
     root: PathBuf,
     database_path: io::Result<PathBuf>,
     cancel: &AtomicBool,

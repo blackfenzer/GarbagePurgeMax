@@ -1,3 +1,4 @@
+mod export;
 mod file_table;
 mod inspector;
 mod saved;
@@ -313,6 +314,11 @@ impl Results {
                         duplicate_summary
                             .into_iter()
                             .chain(file_type_summary)
+                            .chain(
+                                self.saved
+                                    .as_ref()
+                                    .and_then(|saved| saved.export_status.clone()),
+                            )
                             .map(|message| div().text_sm().text_color(muted).child(message)),
                     )
                     .child(
@@ -328,6 +334,14 @@ impl Results {
                                         .aria_label("Search file paths"),
                                 ),
                             )
+                            .children(self.saved.as_ref().map(|_| {
+                                Button::new("export-csv")
+                                    .small()
+                                    .label("Export CSV")
+                                    .on_click(cx.listener(|workspace, _, _, cx| {
+                                        workspace.results.export_csv(cx)
+                                    }))
+                            }))
                             .children(
                                 self.saved
                                     .as_ref()

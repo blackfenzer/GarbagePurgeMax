@@ -23,6 +23,7 @@ pub(super) struct SavedResults {
     pub error: Option<String>,
     /// `None` while the totals load; they cover the whole saved scan, not the current page.
     pub file_types: Option<Result<Vec<FileTypeTotal>, String>>,
+    pub export_status: Option<String>,
     request: Option<Task<()>>,
     _file_types_request: Task<()>,
 }
@@ -62,6 +63,7 @@ impl Results {
             loading: true,
             error: None,
             file_types: None,
+            export_status: None,
             request: None,
             _file_types_request: file_types_request,
         });

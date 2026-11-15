@@ -30,6 +30,7 @@ const LIST_DUPLICATE_FILES: &str = include_str!("../sql/list_duplicate_files.sql
 const LIST_DUPLICATE_GROUPS: &str = include_str!("../sql/list_duplicate_groups.sql");
 const LIST_DUPLICATE_GROUP_FILES: &str = include_str!("../sql/list_duplicate_group_files.sql");
 const LIST_SIMILAR_IMAGE_GROUPS: &str = include_str!("../sql/list_similar_image_groups.sql");
+const EXPORT_FILES: &str = include_str!("../sql/export_files.sql");
 const LIST_SIMILAR_IMAGE_GROUP_FILES: &str =
     include_str!("../sql/list_similar_image_group_files.sql");
 
@@ -45,6 +46,16 @@ pub struct ReviewGroup {
     pub group_id: u64,
     pub file_count: u64,
     pub logical_bytes: u64,
+}
+
+/// One indexed file with the groups it belongs to, for export.
+#[derive(Debug)]
+pub struct ExportedFile {
+    pub file: FileRecord,
+    /// Byte-verified duplicate group.
+    pub duplicate_group: Option<u64>,
+    /// Heuristic similar-image group and the distance from its reference image.
+    pub similar_image: Option<(u64, u32)>,
 }
 
 /// Why an image was grouped: its difference hash and distance from the group's reference.
@@ -319,6 +330,24 @@ impl ScanStore {
             .collect()
     }
 
+    /// Every indexed file with its group memberships, largest first.
+    pub fn exported_files(&self, scan_id: i64) -> rusqlite::Result<Vec<ExportedFile>> {
+        let mut statement = self.0.prepare(EXPORT_FILES)?;
+        statement
+            .query_map(named_params! {":scan_id": scan_id}, |row| {
+                let similar_group: Option<i64> = row.get(9)?;
+                Ok(ExportedFile {
+                    file: file_record(row)?,
+                    duplicate_group: optional_unsigned(row, 8)?,
+                    similar_image: match similar_group {
+                        Some(_) => Some((unsigned_integer(row, 9)?, row.get(10)?)),
+                        None => None,
+                    },
+                })
+            })?
+            .collect()
+    }
+
     /// Files matching a cleanup rule, largest first. Rules run on the saved metadata, so
     /// older scans gain candidates when the rules change.
     // ponytail: classifies every file row per call, like `file_types`; store the kind if slow.
@@ -589,6 +618,11 @@ fn incompatible_schema(version: i64) -> rusqlite::Error {
 
 fn sqlite_integer(value: u64) -> rusqlite::Result<i64> {
     i64::try_from(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
+}
+
+fn optional_unsigned(row: &Row<'_>, column: usize) -> rusqlite::Result<Option<u64>> {
+    let value: Option<i64> = row.get(column)?;
+    value.map(|_| unsigned_integer(row, column)).transpose()
 }
 
 fn unsigned_integer(row: &Row<'_>, column: usize) -> rusqlite::Result<u64> {

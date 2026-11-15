@@ -377,6 +377,19 @@ fn lists_review_groups_and_keeps_similarity_evidence() -> Result<(), Box<dyn std
             .duplicate_evidence(scan.id, &[file("photo.jpg", 30)])?
             .is_empty()
     );
+
+    let exported = store.exported_files(scan.id)?;
+    assert_eq!(exported.len(), files.len());
+    let row = |name: &str| {
+        exported
+            .iter()
+            .find(|row| row.file.path == Path::new(name))
+            .unwrap()
+    };
+    assert_eq!(row("large-a.bin").duplicate_group, Some(2));
+    assert_eq!(row("large-a.bin").similar_image, None);
+    assert_eq!(row("photo-small.jpg").similar_image, Some((1, 2)));
+    assert_eq!(row("photo-small.jpg").duplicate_group, None);
     Ok(())
 }
 
