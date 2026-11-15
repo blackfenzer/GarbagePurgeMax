@@ -15,6 +15,7 @@
 | Traversal benchmark | The release scan engine averaged 267,804 files/s with 2,272 KiB peak worker RSS and 6.5 µs median cancellation latency on the synthetic 100,000-file fixture. See [method and results](benchmarks.md). |
 | Windows CI ready | Added a Windows x64 MSVC workflow that builds the desktop executable and runs the workspace tests. Native Windows execution is pending. |
 | File-type breakdown | Saved scans show counts and logical bytes per type, from file extensions, with an Other fallback. Totals load off the UI thread and cover partial and reopened scans. On Apple Silicon, rustfmt, strict Clippy, 32 Rust tests, and the app build passed. Not yet checked in the running app. |
+| Smoke fixture | Added `cargo run --locked --release -p scan-engine --example smoke_fixture -- <new folder>`. It writes 120,023 readable files: 120,000 searchable `report-*` files in six types, small duplicate and same-size groups, six sparse 2 GiB identical `.dmg` files for large-file findings and cancellable verification, an `exclude-me` folder, and an unreadable `locked` folder on Unix. Generated on macOS in 6.6 s, 60 KiB on disk. Run `chmod 755 <folder>/locked` before deleting it. |
 | Remaining interactive checks | The desktop automation rejected the unpackaged macOS executable. Full-scan search, mouse and keyboard navigation, and picker and scan cancellation still need an interactive check. Build and run the desktop workflow on Windows 11 x64. |
 
 ## Next development session
