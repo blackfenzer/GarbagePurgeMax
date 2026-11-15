@@ -9,7 +9,10 @@ use rusqlite::{
     Connection, OptionalExtension, Row, Transaction, TransactionBehavior, named_params, params,
     types::Type,
 };
-use scan_engine::{FileRecord, ScanProgress, ScanSummary, SimilarImage, file_type};
+use scan_engine::{
+    CleanupCandidate, FileRecord, ScanProgress, ScanSummary, SimilarImage, cleanup_candidate,
+    file_type,
+};
 
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
@@ -314,6 +317,21 @@ impl ScanStore {
                 },
             )?
             .collect()
+    }
+
+    /// Files matching a cleanup rule, largest first. Rules run on the saved metadata, so
+    /// older scans gain candidates when the rules change.
+    // ponytail: classifies every file row per call, like `file_types`; store the kind if slow.
+    pub fn cleanup_candidates(
+        &self,
+        scan_id: i64,
+        scanned_at: SystemTime,
+    ) -> rusqlite::Result<Vec<(FileRecord, CleanupCandidate)>> {
+        Ok(self
+            .file_page(LIST_FILES, scan_id, "", u32::MAX, 0)?
+            .into_iter()
+            .filter_map(|file| cleanup_candidate(&file, scanned_at).map(|found| (file, found)))
+            .collect())
     }
 
     /// Totals indexed files by type, largest first. Cancelled scans cover the indexed part.

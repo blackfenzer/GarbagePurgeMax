@@ -15,6 +15,7 @@
 - A reproducible 100,000-file traversal benchmark and a Windows x64 build and test workflow.
 - An end-to-end benchmark of scanning, indexing, duplicate verification, review queries, and cancellation on 100,000 files.
 - A generated smoke-test fixture for the desktop workflow.
+- Review-only cleanup candidates for empty files, temporary files, incomplete downloads, installers, archives, and old downloads, each with its evidence.
 - A Review page with Exact duplicates and Similar images tabs, side-by-side previews, and the evidence for each match.
 - Similar-image detection for JPEG, PNG, GIF, WebP, BMP, and TIFF files using a difference hash, stored apart from exact duplicates.
 - A file-type breakdown with counts and logical size for saved scans, labelled as indexed totals for cancelled scans.

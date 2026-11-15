@@ -67,6 +67,7 @@ fn main() -> io::Result<()> {
     }
 
     write_images(&root.join("images"))?;
+    write_cleanup_candidates(&root.join("cleanup"))?;
     write_unreadable_folder(&root.join("locked"))?;
     println!("Smoke fixture ready at {}", root.display());
     Ok(())
@@ -104,6 +105,26 @@ fn write_images(folder: &Path) -> io::Result<()> {
     save(&sunset, "sunset.png")?;
     save(&sunset, "sunset copy.png")?;
     fs::write(folder.join("not-really.png"), "not an image")
+}
+
+/// One file per remaining cleanup rule. The `.zip`, `.dmg`, and empty files elsewhere
+/// cover archives, installers, and empty files.
+fn write_cleanup_candidates(folder: &Path) -> io::Result<()> {
+    use std::time::{Duration, SystemTime};
+
+    let downloads = folder.join("Downloads");
+    fs::create_dir_all(&downloads)?;
+    for name in [".DS_Store", "~$draft.docx", "movie.mp4.crdownload"] {
+        fs::write(folder.join(name), "temporary")?;
+    }
+    let receipt = downloads.join("old-receipt.pdf");
+    fs::write(&receipt, "receipt")?;
+    let two_hundred_days = Duration::from_secs(200 * 24 * 60 * 60);
+    File::options()
+        .write(true)
+        .open(&receipt)?
+        .set_modified(SystemTime::now() - two_hundred_days)?;
+    fs::write(downloads.join("recent-notes.txt"), "kept: modified today")
 }
 
 #[cfg(unix)]

@@ -6,10 +6,12 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+mod cleanup_candidates;
 mod duplicates;
 mod file_types;
 mod similar_images;
 
+pub use cleanup_candidates::{CleanupCandidate, CleanupKind, OLD_DOWNLOAD_DAYS, cleanup_candidate};
 pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
 pub use file_types::{OTHER_FILE_TYPE, file_type};
 pub use similar_images::{

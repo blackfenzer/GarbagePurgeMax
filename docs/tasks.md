@@ -42,7 +42,8 @@ Run final release checks on the integrated build. If the desktop automation cann
 
 - [x] Evaluate perceptual image hashes on a fixture set with crops, resizes, edits, and visually distinct images. Keep similarity evidence separate from verified exact matches. See [image similarity](image-similarity.md): use a difference hash at ≤ 6 and confirm it on real photos.
 - [x] Build Similar Images and Duplicate Review views with side-by-side previews, group details, and evidence. **Needs testing:** an interactive check of the Review page, and the similarity threshold on real photos.
-- [ ] Add evidence-backed candidates for old downloads, installers, archives, known temporary files, and empty items.
+- [x] Add evidence-backed candidates for old downloads, installers, archives, known temporary files, and empty files. **Needs testing:** an interactive check of the Cleanup candidates tab.
+- [ ] Detect empty folders. Traversal records only regular files today, so this needs folder records in the scanner and store.
 - [ ] Add repeatable scan profiles, richer filters and sorting, and scan export. Preserve path, type, size, age, group, confidence, risk, status, and directory semantics where applicable.
 - [ ] Add incremental scan caching. Reuse results only after revalidating file identity, size, and timestamps. Measure cold and warm scans, hashing throughput, CPU and I/O load, and cache effectiveness.
 - [ ] Add protected locations and conservative risk tiers. Keep unknown, personal, development, system, and cloud-placeholder data in review-only states.

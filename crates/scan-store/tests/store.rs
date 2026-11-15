@@ -3,7 +3,7 @@ use std::sync::Barrier;
 use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::Connection;
-use scan_engine::{FileRecord, ScanProgress, ScanSummary, SimilarImage};
+use scan_engine::{CleanupKind, FileRecord, ScanProgress, ScanSummary, SimilarImage};
 use scan_store::{DuplicateEvidence, FileTypeTotal, ReviewGroup, ScanStore, SimilarImageEvidence};
 
 #[test]
@@ -376,6 +376,33 @@ fn lists_review_groups_and_keeps_similarity_evidence() -> Result<(), Box<dyn std
         store
             .duplicate_evidence(scan.id, &[file("photo.jpg", 30)])?
             .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn lists_cleanup_candidates_largest_first() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(directory.path(), 1_000)?;
+    for record in [
+        file("empty", 0),
+        file("notes.txt", 7),
+        file("old.zip", 40),
+        file("Tool.dmg", 90),
+    ] {
+        writer.insert_file(&record)?;
+    }
+    let scan = writer.finish(&summary(4, false), 0)?;
+    let candidates = store.cleanup_candidates(scan.id, UNIX_EPOCH)?;
+    let kinds: Vec<_> = candidates.iter().map(|(_, found)| found.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            CleanupKind::Installer,
+            CleanupKind::Archive,
+            CleanupKind::EmptyFile
+        ]
     );
     Ok(())
 }

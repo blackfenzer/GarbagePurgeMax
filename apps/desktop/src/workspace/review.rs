@@ -1,4 +1,5 @@
 use std::io;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
@@ -9,19 +10,26 @@ use gpui_kit::{
     ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Task, div,
     img, px,
 };
-use scan_engine::{FileRecord, SIMILAR_IMAGE_DISTANCE, is_hashable_image};
+use scan_engine::{
+    CleanupCandidate, CleanupKind, FileRecord, SIMILAR_IMAGE_DISTANCE, is_hashable_image,
+};
 use scan_store::{DuplicateEvidence, ReviewGroup, SavedScan, SimilarImageEvidence};
 
 use super::{Workspace, scan::format_bytes, storage};
 
 const PAGE_SIZE: u32 = 30;
+/// Cards shown for one group. Candidate groups can hold thousands of files.
+const MAX_CARDS: usize = 200;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum ReviewKind {
     #[default]
     ExactDuplicates,
     SimilarImages,
+    CleanupCandidates,
 }
+
+type GroupsAndCandidates = (Vec<ReviewGroup>, Vec<Vec<Member>>);
 
 /// A group member and the saved evidence for its match.
 type Member = (FileRecord, Option<Evidence>);
@@ -29,9 +37,10 @@ type Member = (FileRecord, Option<Evidence>);
 enum Evidence {
     Exact(DuplicateEvidence),
     Similar(SimilarImageEvidence),
+    Cleanup(CleanupCandidate),
 }
 
-/// Groups for the scan open in Scan Results. Exact and similar groups stay in separate tabs.
+/// Groups for the scan open in Scan Results. Exact, similar, and cleanup groups stay in separate tabs.
 #[derive(Default)]
 pub(super) struct Review {
     scan: Option<SavedScan>,
@@ -41,6 +50,8 @@ pub(super) struct Review {
     has_next: bool,
     selected_group: Option<u64>,
     members: Vec<Member>,
+    /// Cleanup candidates by `CleanupKind::ALL` position. Group ids are positions plus one.
+    candidate_groups: Vec<Vec<Member>>,
     loading: bool,
     error: Option<String>,
     request: Option<Task<()>>,
@@ -66,35 +77,31 @@ impl Review {
         self.request.take();
         self.groups.clear();
         self.members.clear();
+        self.candidate_groups.clear();
         self.selected_group = None;
         self.error = None;
-        let Some(scan_id) = self.scan.as_ref().map(|scan| scan.id) else {
+        let Some(scan) = &self.scan else {
             self.loading = false;
             cx.notify();
             return;
         };
+        let scan_id = scan.id;
+        let scanned_at =
+            UNIX_EPOCH + Duration::from_millis(u64::try_from(scan.started_unix_ms).unwrap_or(0));
         self.loading = true;
         let kind = self.kind;
         self.request = Some(cx.spawn(async move |workspace, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let store = storage::open()?;
-                    match kind {
-                        ReviewKind::ExactDuplicates => {
-                            store.duplicate_groups(scan_id, PAGE_SIZE + 1, offset)
-                        }
-                        ReviewKind::SimilarImages => {
-                            store.similar_image_groups(scan_id, PAGE_SIZE + 1, offset)
-                        }
-                    }
-                    .map_err(io::Error::other)
+                    load_groups(kind, scan_id, offset, scanned_at).map_err(io::Error::other)
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {
                 let review = &mut workspace.review;
                 review.loading = false;
                 match result {
-                    Ok(mut groups) => {
+                    Ok((mut groups, candidate_groups)) => {
+                        review.candidate_groups = candidate_groups;
                         review.has_next = groups.len() > PAGE_SIZE as usize;
                         groups.truncate(PAGE_SIZE as usize);
                         review.offset = offset;
@@ -116,6 +123,12 @@ impl Review {
         let Some(scan_id) = self.scan.as_ref().map(|scan| scan.id) else {
             return;
         };
+        if self.kind == ReviewKind::CleanupCandidates {
+            // Candidates arrive with their groups, so selection needs no query.
+            self.selected_group = Some(group_id);
+            cx.notify();
+            return;
+        }
         self.request.take();
         self.selected_group = Some(group_id);
         self.members.clear();
@@ -169,6 +182,10 @@ impl Review {
                     "Images whose difference hash is within {SIMILAR_IMAGE_DISTANCE} of 64 bits of the group's reference image. This is a heuristic match, not a verified copy. Compare the images before acting.",
                 ),
             ),
+            ReviewKind::CleanupCandidates => (
+                true,
+                "Files matching a cleanup rule, judged from the names, sizes, folders, and dates saved with the scan. Candidates are for review only. Nothing is moved or deleted.".to_string(),
+            ),
         };
         let status = if self.loading {
             Some("Loading…".to_string())
@@ -212,6 +229,11 @@ impl Review {
                     "similar-images",
                     format!("Similar images · {}", scan.similar_group_count),
                     ReviewKind::SimilarImages,
+                ))
+                .child(tab(
+                    "cleanup-candidates",
+                    "Cleanup candidates".into(),
+                    ReviewKind::CleanupCandidates,
                 )),
         )
         .child(div().text_sm().text_color(muted).child(explanation))
@@ -243,7 +265,7 @@ impl Review {
                 .on_click(cx.listener(move |workspace, _, _, cx| {
                     workspace.review.select_group(group_id, cx)
                 }))
-                .child(div().text_sm().child(format!("Group {group_id}")))
+                .child(div().text_sm().child(self.group_title(group_id)))
                 .child(div().text_xs().text_color(muted).child(format!(
                     "{} files · {}",
                     group.file_count,
@@ -297,12 +319,30 @@ impl Review {
             }))
     }
 
+    fn group_title(&self, group_id: u64) -> String {
+        match self.kind {
+            ReviewKind::CleanupCandidates => CleanupKind::ALL
+                .get(group_id as usize - 1)
+                .map_or("Candidates", |kind| kind.label())
+                .to_string(),
+            _ => format!("Group {group_id}"),
+        }
+    }
+
     /// Group members side by side: preview, location, size, and the evidence for the match.
     fn group_detail(&self, cx: &Context<Workspace>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
-        let cards = self
-            .members
+        let members: &[Member] = match (self.kind, self.selected_group) {
+            (ReviewKind::CleanupCandidates, Some(group_id)) => self
+                .candidate_groups
+                .get(group_id as usize - 1)
+                .map_or(&[], Vec::as_slice),
+            _ => &self.members,
+        };
+        let hidden = members.len().saturating_sub(MAX_CARDS);
+        let cards = members
             .iter()
+            .take(MAX_CARDS)
             .enumerate()
             .map(|(index, (file, evidence))| {
                 let name = file
@@ -343,6 +383,10 @@ impl Review {
                         "Similar image".to_string(),
                         format!("{} of 64 bits differ from the reference", evidence.distance),
                         format!("Difference hash {:016x}", evidence.difference_hash),
+                    ],
+                    Some(Evidence::Cleanup(candidate)) => vec![
+                        candidate.kind.label().to_string(),
+                        candidate.evidence.clone(),
                     ],
                     None => vec!["No saved evidence for this file".to_string()],
                 };
@@ -395,8 +439,55 @@ impl Review {
             .flex_1()
             .min_w(px(0.))
             .overflow_y_scroll()
+            .children((hidden > 0).then(|| {
+                div().mb_3().text_sm().text_color(muted).child(format!(
+                    "Showing the largest {MAX_CARDS} of {} files.",
+                    members.len()
+                ))
+            }))
             .child(div().flex().flex_wrap().gap_3().children(cards))
     }
+}
+
+fn load_groups(
+    kind: ReviewKind,
+    scan_id: i64,
+    offset: u64,
+    scanned_at: SystemTime,
+) -> Result<GroupsAndCandidates, Box<dyn std::error::Error + Send + Sync>> {
+    let store = storage::open()?;
+    Ok(match kind {
+        ReviewKind::ExactDuplicates => (
+            store.duplicate_groups(scan_id, PAGE_SIZE + 1, offset)?,
+            Vec::new(),
+        ),
+        ReviewKind::SimilarImages => (
+            store.similar_image_groups(scan_id, PAGE_SIZE + 1, offset)?,
+            Vec::new(),
+        ),
+        ReviewKind::CleanupCandidates => {
+            let mut by_kind: Vec<Vec<Member>> =
+                CleanupKind::ALL.iter().map(|_| Vec::new()).collect();
+            for (file, candidate) in store.cleanup_candidates(scan_id, scanned_at)? {
+                let index = CleanupKind::ALL
+                    .iter()
+                    .position(|kind| *kind == candidate.kind)
+                    .expect("every kind is listed");
+                by_kind[index].push((file, Some(Evidence::Cleanup(candidate))));
+            }
+            let groups = by_kind
+                .iter()
+                .enumerate()
+                .filter(|(_, members)| !members.is_empty())
+                .map(|(index, members)| ReviewGroup {
+                    group_id: index as u64 + 1,
+                    file_count: members.len() as u64,
+                    logical_bytes: members.iter().map(|(file, _)| file.logical_bytes).sum(),
+                })
+                .collect();
+            (groups, by_kind)
+        }
+    })
 }
 
 fn load_members(
@@ -422,6 +513,7 @@ fn load_members(
             .into_iter()
             .map(|(file, evidence)| (file, Some(Evidence::Similar(evidence))))
             .collect(),
+        ReviewKind::CleanupCandidates => Vec::new(),
     })
 }
 
