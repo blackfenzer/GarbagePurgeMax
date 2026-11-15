@@ -22,7 +22,7 @@ fn main() {
 
             match gpui_kit::open_window(options, cx, |window, cx| {
                 window.set_window_title("Storage Clinic");
-                cx.new(|_| Workspace::default())
+                cx.new(|cx| Workspace::new(window, cx))
             }) {
                 Ok(_) => {
                     log::info!("Opened Storage Clinic");

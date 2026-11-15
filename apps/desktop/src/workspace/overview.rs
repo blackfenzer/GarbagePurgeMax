@@ -8,7 +8,7 @@ use gpui_kit::{Context, Div, ParentElement as _, Styled as _, div, px};
 use super::scan::{ScanSession, format_bytes};
 use super::{Page, Workspace};
 
-pub(super) fn render(scan: &ScanSession, cx: &Context<Workspace>) -> Div {
+pub(super) fn render(scan: &ScanSession, viewing_saved_scan: bool, cx: &Context<Workspace>) -> Div {
     let (heading, description) = match (&scan.active, &scan.report) {
         (Some(active), _) => (
             if active.cancelling {
@@ -40,8 +40,8 @@ pub(super) fn render(scan: &ScanSession, cx: &Context<Workspace>) -> Div {
             ),
         ),
         (None, None) => (
-            "No scans yet",
-            "Choose a folder to inspect its largest files. Scans are read-only.".into(),
+            "Ready to scan",
+            "Choose a folder to inspect its files. Scans are read-only.".into(),
         ),
     };
     let scan_button = match &scan.active {
@@ -57,7 +57,7 @@ pub(super) fn render(scan: &ScanSession, cx: &Context<Workspace>) -> Div {
     };
     let results_button = Button::new("open-results")
         .ghost()
-        .label(if scan.report.is_some() {
+        .label(if scan.report.is_some() || viewing_saved_scan {
             "View results"
         } else {
             "View sample results"

@@ -8,7 +8,7 @@ use gpui_kit::{
 };
 use scan_engine::FileRecord;
 
-use super::super::scan::{LARGE_FILE_BYTES, format_bytes};
+use super::super::scan::format_bytes;
 use super::{SampleFile, Workspace};
 
 pub(super) fn sample_file(file: &SampleFile, cx: &Context<Workspace>) -> Div {
@@ -27,7 +27,7 @@ pub(super) fn sample_file(file: &SampleFile, cx: &Context<Workspace>) -> Div {
         .child(div().text_sm().text_color(muted).child(file.explanation))
 }
 
-pub(super) fn scanned_file(file: &FileRecord, cx: &Context<Workspace>) -> Div {
+pub(super) fn scanned_file(file: &FileRecord, threshold: u64, cx: &Context<Workspace>) -> Div {
     let muted = cx.theme().muted_foreground;
     let name = file.path.file_name().unwrap_or(file.path.as_os_str());
     let extension = file
@@ -72,15 +72,13 @@ pub(super) fn scanned_file(file: &FileRecord, cx: &Context<Workspace>) -> Div {
     if file.read_only {
         content = content.child(div().text_sm().child("Read-only attribute set"));
     }
-    if file.logical_bytes >= LARGE_FILE_BYTES {
+    if file.logical_bytes >= threshold {
         content = content
             .child(div().text_sm().font_semibold().child("Large file"))
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("The logical size meets the scan’s 1 GiB threshold."),
-            );
+            .child(div().text_sm().text_color(muted).child(format!(
+                "The logical size meets the scan’s {} threshold.",
+                format_bytes(threshold)
+            )));
     }
     content
 }

@@ -1,18 +1,25 @@
+mod file_table;
 mod inspector;
+mod saved;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    table::{Table, TableBody, TableCell, TableHead, TableHeader, TableRow},
+    ActiveTheme as _, Disableable as _, Sizable as _,
+    button::Button,
+    input::{Input, InputEvent, InputState},
+    table::{DataTable, TableEvent, TableState},
 };
 use gpui_kit::{
-    Context, Div, InteractiveElement as _, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _, Subscription, Window,
+    div, px,
 };
 
 use super::Workspace;
+use scan_engine::ScanProgress;
+
 use super::scan::{LARGE_FILE_BYTES, ScanReport, format_bytes};
+use file_table::FileRows;
+use saved::{PAGE_SIZE, SavedResults};
 
 struct SampleFile {
     name: &'static str,
@@ -46,143 +53,237 @@ const SAMPLE_FILES: &[SampleFile] = &[
     },
 ];
 
-pub(super) fn render(
-    report: Option<&ScanReport>,
-    selected_file: Option<usize>,
-    cx: &Context<Workspace>,
-) -> Div {
-    let (description, rows, detail) = match report {
-        Some(report) => {
-            let summary = &report.summary;
-            let progress = summary.progress;
-            let status = if summary.cancelled {
-                "Cancelled scan · "
-            } else {
-                ""
-            };
-            let description = format!(
-                "{status}{} files · {} logical size · {} large · {} skipped · {} errors · showing {} largest",
-                progress.files,
-                format_bytes(progress.logical_bytes),
-                report.large_file_count,
-                progress.skipped,
-                progress.errors,
-                report.largest_files.len()
-            );
-            let rows = report
-                .largest_files
-                .iter()
-                .map(|file| {
-                    let name = file.path.file_name().unwrap_or(file.path.as_os_str());
-                    let finding = if file.logical_bytes >= LARGE_FILE_BYTES {
-                        "Large file"
-                    } else {
-                        "—"
-                    };
-                    (
-                        SharedString::from(name.to_string_lossy().into_owned()),
-                        finding,
-                        SharedString::from(format_bytes(file.logical_bytes)),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let detail = selected_file
-                .and_then(|index| report.largest_files.get(index))
-                .map(|file| inspector::scanned_file(file, cx));
-            (description, rows, detail)
-        }
-        None => {
-            let rows = SAMPLE_FILES
-                .iter()
-                .map(|file| (file.name.into(), file.finding, file.size.into()))
-                .collect();
-            let detail = selected_file
-                .and_then(|index| SAMPLE_FILES.get(index))
-                .map(|file| inspector::sample_file(file, cx));
-            (
-                format!("Sample data · {} files", SAMPLE_FILES.len()),
-                rows,
-                detail,
-            )
-        }
-    };
-    let finding_width = px(112.0);
-    let size_width = px(80.0);
-    let header = TableHeader::new().child(
-        TableRow::new()
-            .child(TableHead::new().child("File"))
-            .child(TableHead::new().w(finding_width).child("Finding"))
-            .child(TableHead::new().w(size_width).text_right().child("Size")),
-    );
-    let rows = rows
-        .into_iter()
-        .enumerate()
-        .map(|(index, (name, finding, size))| {
-            TableRow::new()
-                .child(
-                    TableCell::new().min_w(px(0.0)).overflow_hidden().child(
-                        Button::new(("scan-file", index))
-                            .ghost()
-                            .small()
-                            .max_w_full()
-                            .label(name)
-                            .selected(selected_file == Some(index))
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.selected_file = Some(index);
-                                cx.notify();
-                            })),
-                    ),
-                )
-                .child(TableCell::new().w(finding_width).child(finding))
-                .child(TableCell::new().w(size_width).text_right().child(size))
+pub(super) struct Results {
+    input: Entity<InputState>,
+    table: Entity<TableState<FileRows>>,
+    saved: Option<SavedResults>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl Results {
+    pub(super) fn is_saved(&self) -> bool {
+        self.saved.is_some()
+    }
+
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search file paths"));
+        let table = cx.new(|cx| {
+            TableState::new(FileRows::samples(), window, cx)
+                .col_selectable(false)
+                .col_movable(false)
         });
-    let muted = cx.theme().muted_foreground;
-    let details = report.map(|report| {
+        let search = cx.subscribe(&input, |workspace, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value();
+                if workspace.results.saved.is_some() {
+                    workspace.results.load_page(0, true, cx);
+                } else {
+                    workspace.results.filter(&query, cx);
+                }
+                cx.notify();
+            }
+        });
+        let selection = cx.subscribe(&table, |_, _, event: &TableEvent, cx| {
+            if matches!(event, TableEvent::SelectRow(_) | TableEvent::ClearSelection) {
+                cx.notify();
+            }
+        });
+
+        Self {
+            input,
+            table,
+            saved: None,
+            _subscriptions: [search, selection],
+        }
+    }
+
+    pub(super) fn show_scan(&mut self, report: &ScanReport, cx: &mut Context<Workspace>) {
+        if let Some(scan) = &report.saved {
+            self.open_saved(scan.clone(), cx);
+            return;
+        }
+        self.saved = None;
+        let query = self.input.read(cx).value();
+        let rows = FileRows::from_files(&report.largest_files, LARGE_FILE_BYTES, &query);
+        self.replace_rows(rows, cx);
+    }
+
+    fn replace_rows(&self, rows: FileRows, cx: &mut Context<Workspace>) {
+        self.table.update(cx, |table, cx| {
+            *table.delegate_mut() = rows;
+            table.clear_selection(cx);
+            if table.delegate().counts().0 > 0 {
+                table.scroll_to_row(0, cx);
+            }
+        });
+    }
+
+    fn filter(&self, query: &str, cx: &mut Context<Workspace>) {
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().filter(query);
+            table.clear_selection(cx);
+            if table.delegate().counts().0 > 0 {
+                table.scroll_to_row(0, cx);
+            }
+        });
+    }
+
+    pub(super) fn render(&self, report: Option<&ScanReport>, cx: &Context<Workspace>) -> Div {
+        let table = self.table.read(cx);
+        let rows = table.delegate();
+        let selected = table.selected_row().and_then(|row| rows.source_index(row));
+        let (matches, files) = rows.counts();
+        let muted = cx.theme().muted_foreground;
+        let (summary, scope, root, first_error, detail) = match (&self.saved, report) {
+            (Some(saved), _) => {
+                let scan = &saved.scan;
+                let scope = if saved.loading {
+                    "Loading files…".into()
+                } else if let Some(error) = &saved.error {
+                    error.clone()
+                } else if saved.files.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "Files {}–{} · Largest first",
+                        saved.offset + 1,
+                        saved.offset + saved.files.len() as u64
+                    )
+                };
+                let detail = selected
+                    .and_then(|index| saved.files.get(index))
+                    .map(|file| inspector::scanned_file(file, scan.large_file_threshold, cx));
+                (
+                    summary_line(scan.progress, scan.cancelled, scan.large_file_count),
+                    scope,
+                    Some(scan.root.as_path()),
+                    scan.first_error.as_deref(),
+                    detail,
+                )
+            }
+            (None, Some(report)) => {
+                let summary = &report.summary;
+                let description =
+                    summary_line(summary.progress, summary.cancelled, report.large_file_count);
+                let scope = format!("{} of {} preview files · Largest first", matches, files,);
+                let detail = selected
+                    .and_then(|index| report.largest_files.get(index))
+                    .map(|file| inspector::scanned_file(file, LARGE_FILE_BYTES, cx));
+                (
+                    description,
+                    scope,
+                    Some(report.root.as_path()),
+                    summary.first_error.as_deref(),
+                    detail,
+                )
+            }
+            (None, None) => {
+                let detail = selected
+                    .and_then(|index| SAMPLE_FILES.get(index))
+                    .map(|file| inspector::sample_file(file, cx));
+                let scope = format!("{} of {} sample files", matches, files);
+                ("Sample data".into(), scope, None, None, detail)
+            }
+        };
+        let save_error = report
+            .filter(|_| self.saved.is_none())
+            .and_then(|report| report.save_error.as_ref());
+        let show_table = self
+            .saved
+            .as_ref()
+            .is_none_or(|saved| !saved.loading && saved.error.is_none());
+        let pagination = self
+            .saved
+            .as_ref()
+            .filter(|saved| saved.offset > 0 || saved.has_next)
+            .map(|saved| {
+                let previous = saved.offset.saturating_sub(u64::from(PAGE_SIZE));
+                let next = saved.offset + u64::from(PAGE_SIZE);
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("previous-files")
+                            .small()
+                            .label("Previous")
+                            .disabled(saved.offset == 0 || saved.loading)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.results.load_page(previous, false, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("next-files")
+                            .small()
+                            .label("Next")
+                            .disabled(!saved.has_next || saved.loading)
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.results.load_page(next, false, cx)
+                            })),
+                    )
+            });
+
         div()
             .flex()
-            .flex_col()
-            .gap_1()
+            .size_full()
             .child(
                 div()
-                    .text_sm()
-                    .text_color(muted)
-                    .text_ellipsis()
-                    .child(report.root.display().to_string()),
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .gap_3()
+                    .p_6()
+                    .child(div().text_xl().font_semibold().child("Scan Results"))
+                    .child(div().text_sm().text_color(muted).child(summary))
+                    .children(root.map(|root| {
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .text_ellipsis()
+                            .child(root.display().to_string())
+                    }))
+                    .children(first_error.map(|error| {
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(format!("First scan error: {error}"))
+                    }))
+                    .children(save_error.map(|error| {
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(format!("Could not save scan: {error}"))
+                    }))
+                    .child(
+                        Input::new(&self.input)
+                            .small()
+                            .cleanable(true)
+                            .aria_label("Search file paths"),
+                    )
+                    .children(
+                        (!scope.is_empty()).then(|| div().text_sm().text_color(muted).child(scope)),
+                    )
+                    .children(show_table.then(|| {
+                        div().flex().flex_col().flex_1().min_h(px(0.)).child(
+                            DataTable::new(&self.table)
+                                .small()
+                                .accessibility_label("Scan files"),
+                        )
+                    }))
+                    .children(pagination),
             )
-            .children(report.summary.first_error.as_ref().map(|error| {
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(format!("First scan error: {error}"))
-            }))
-    });
+            .child(inspector::render(detail, cx))
+    }
+}
 
-    div()
-        .flex()
-        .size_full()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap_4()
-                .p_6()
-                .child(div().text_xl().font_semibold().child("Scan Results"))
-                .child(div().text_sm().text_color(muted).child(description))
-                .children(details)
-                .child(
-                    div()
-                        .id("scan-results-list")
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .overflow_y_scroll()
-                        .child(
-                            Table::new()
-                                .child(header)
-                                .child(TableBody::new().children(rows)),
-                        ),
-                ),
-        )
-        .child(inspector::render(detail, cx))
+fn summary_line(progress: ScanProgress, cancelled: bool, large_file_count: u64) -> String {
+    let status = if cancelled { "Cancelled scan · " } else { "" };
+    format!(
+        "{status}{} files · {} logical size · {} large · {} skipped · {} errors",
+        progress.files,
+        format_bytes(progress.logical_bytes),
+        large_file_count,
+        progress.skipped,
+        progress.errors
+    )
 }

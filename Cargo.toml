@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop", "crates/scan-engine"]
+members = ["apps/desktop", "crates/scan-engine", "crates/scan-store"]
 resolver = "3"
 
 [workspace.package]

@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, PathPromptOptions};
 use scan_engine::{FileRecord, ScanProgress, ScanSummary, scan_directory};
+use scan_store::SavedScan;
 
-use super::{Page, Workspace};
+use super::{Page, Workspace, storage};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 const PREVIEW_LIMIT: usize = 100;
@@ -39,6 +40,8 @@ pub(super) struct ScanReport {
     pub summary: ScanSummary,
     pub largest_files: Vec<FileRecord>,
     pub large_file_count: u64,
+    pub saved: Option<SavedScan>,
+    pub save_error: Option<String>,
 }
 
 impl Workspace {
@@ -101,7 +104,7 @@ impl Workspace {
         let worker_progress = Arc::clone(&latest);
         let (send, receive) = mpsc::sync_channel(1);
         cx.background_spawn(async move {
-            let result = inspect_folder(root, &cancel, LARGE_FILE_BYTES, |progress| {
+            let result = inspect_and_save(root, storage::database_path(), &cancel, |progress| {
                 *worker_progress.lock().expect("scan progress lock") = progress;
             });
             let _ = send.send(result);
@@ -123,8 +126,8 @@ impl Workspace {
                         workspace.scan.active = None;
                         match result {
                             Ok(report) => {
+                                workspace.results.show_scan(&report, cx);
                                 workspace.scan.report = Some(report);
-                                workspace.selected_file = None;
                                 workspace.page = Page::Results;
                             }
                             Err(error) => {
@@ -159,17 +162,71 @@ impl Workspace {
     }
 }
 
+fn inspect_and_save(
+    root: PathBuf,
+    database_path: io::Result<PathBuf>,
+    cancel: &AtomicBool,
+    progress_changed: impl FnMut(ScanProgress),
+) -> io::Result<ScanReport> {
+    let (mut database, exclusions) = match database_path {
+        Ok(path) => {
+            let exclusions = storage::scan_exclusions(&root, &path)?;
+            (storage::open_at(&path), exclusions)
+        }
+        Err(error) => (Err(error), Vec::new()),
+    };
+    let mut save_error = database.as_ref().err().map(ToString::to_string);
+    let mut writer =
+        database
+            .as_mut()
+            .ok()
+            .and_then(|store| match store.begin_scan(&root, LARGE_FILE_BYTES) {
+                Ok(writer) => Some(writer),
+                Err(error) => {
+                    save_error = Some(error.to_string());
+                    None
+                }
+            });
+    let mut report = inspect_folder(
+        root,
+        &exclusions,
+        cancel,
+        LARGE_FILE_BYTES,
+        progress_changed,
+        |file| {
+            if let Some(current) = &mut writer
+                && let Err(error) = current.insert_file(file)
+            {
+                save_error = Some(error.to_string());
+                // Dropping the writer discards the entire incomplete database transaction.
+                writer = None;
+            }
+        },
+    )?;
+    if let Some(writer) = writer {
+        match writer.finish(&report.summary, report.large_file_count) {
+            Ok(saved) => report.saved = Some(saved),
+            Err(error) => save_error = Some(error.to_string()),
+        }
+    }
+    report.save_error = save_error;
+    Ok(report)
+}
+
 fn inspect_folder(
     root: PathBuf,
+    exclusions: &[PathBuf],
     cancel: &AtomicBool,
     large_file_threshold: u64,
     mut progress_changed: impl FnMut(ScanProgress),
+    mut file_found: impl FnMut(&FileRecord),
 ) -> io::Result<ScanReport> {
     let mut largest_files = Vec::new();
     let mut large_file_count = 0;
     let mut last_update = Instant::now();
-    let summary = scan_directory(&root, &[], cancel, |progress, file| {
+    let summary = scan_directory(&root, exclusions, cancel, |progress, file| {
         if let Some(file) = file {
+            file_found(&file);
             large_file_count += u64::from(file.logical_bytes >= large_file_threshold);
             largest_files.push(file);
             if largest_files.len() == PREVIEW_LIMIT * 2 {
@@ -187,6 +244,8 @@ fn inspect_folder(
         summary,
         largest_files,
         large_file_count,
+        saved: None,
+        save_error: None,
     })
 }
 
@@ -235,8 +294,10 @@ mod tests {
 
         let report = inspect_folder(
             root.path().to_path_buf(),
+            &[],
             &AtomicBool::new(false),
             threshold,
+            |_| {},
             |_| {},
         )?;
         assert_eq!(report.summary.progress.files, threshold + 1);
@@ -247,6 +308,55 @@ mod tests {
             report.largest_files[PREVIEW_LIMIT - 1].logical_bytes,
             threshold - PREVIEW_LIMIT as u64 + 1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reopens_a_scan_and_finds_a_file_outside_the_preview() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let database = root.path().join("app-data/scans.sqlite3");
+        for index in 0..PREVIEW_LIMIT {
+            std::fs::write(root.path().join(format!("file-{index}")), b"data")?;
+        }
+        let needle = root.path().join("find-me.txt");
+        File::create(&needle)?;
+
+        let report = inspect_and_save(
+            root.path().into(),
+            Ok(database.clone()),
+            &AtomicBool::new(false),
+            |_| {},
+        )?;
+        assert!(report.save_error.is_none(), "{:?}", report.save_error);
+        assert_eq!(report.summary.progress.files, PREVIEW_LIMIT as u64 + 1);
+        assert_eq!(report.summary.progress.skipped, 1);
+        assert!(!report.largest_files.iter().any(|file| file.path == needle));
+
+        let reopened = storage::open_at(&database)?;
+        let history = reopened.scans(10, 0).map_err(io::Error::other)?;
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, report.saved.unwrap().id);
+        let files = reopened
+            .files(history[0].id, "FIND-ME", 100, 0)
+            .map_err(io::Error::other)?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, needle);
+        Ok(())
+    }
+
+    #[test]
+    fn retains_preview_if_storage_is_unavailable() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("keep.txt"), "keep")?;
+        let report = inspect_and_save(
+            root.path().into(),
+            Err(io::Error::other("no storage")),
+            &AtomicBool::new(false),
+            |_| {},
+        )?;
+        assert!(report.saved.is_none());
+        assert_eq!(report.save_error.as_deref(), Some("no storage"));
+        assert_eq!(report.largest_files.len(), 1);
         Ok(())
     }
 }

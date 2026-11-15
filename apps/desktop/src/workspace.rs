@@ -1,6 +1,8 @@
+mod history;
 mod overview;
 mod results;
 mod scan;
+mod storage;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
@@ -14,20 +16,22 @@ enum Page {
     #[default]
     Overview,
     Results,
+    History,
 }
 
-#[derive(Default)]
 pub(crate) struct Workspace {
     page: Page,
-    selected_file: Option<usize>,
+    results: results::Results,
     scan: scan::ScanSession,
+    history: history::History,
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu = SidebarMenu::new()
             .child(self.navigation_item(Page::Overview, "Overview", IconName::LayoutDashboard, cx))
-            .child(self.navigation_item(Page::Results, "Scan Results", IconName::FolderOpen, cx));
+            .child(self.navigation_item(Page::Results, "Scan Results", IconName::FolderOpen, cx))
+            .child(self.navigation_item(Page::History, "Scan History", IconName::Calendar, cx));
 
         div()
             .flex()
@@ -43,13 +47,23 @@ impl Render for Workspace {
                     .child(SidebarGroup::new("Storage").child(menu)),
             )
             .child(div().flex_1().min_w(px(0.0)).child(match self.page {
-                Page::Overview => overview::render(&self.scan, cx),
-                Page::Results => results::render(self.scan.report.as_ref(), self.selected_file, cx),
+                Page::Overview => overview::render(&self.scan, self.results.is_saved(), cx),
+                Page::Results => self.results.render(self.scan.report.as_ref(), cx),
+                Page::History => self.history.render(cx),
             }))
     }
 }
 
 impl Workspace {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            page: Page::default(),
+            results: results::Results::new(window, cx),
+            scan: scan::ScanSession::default(),
+            history: history::History::default(),
+        }
+    }
+
     fn navigation_item(
         &self,
         page: Page,
@@ -62,6 +76,9 @@ impl Workspace {
             .active(self.page == page)
             .on_click(cx.listener(move |workspace, _, _, cx| {
                 workspace.page = page;
+                if page == Page::History {
+                    workspace.history.load(0, cx);
+                }
                 cx.notify();
             }))
     }
