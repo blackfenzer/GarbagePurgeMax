@@ -113,3 +113,30 @@ Eight separately written 32 MiB files (256 MiB total) contain identical bytes. B
 The repeat was about 4.8× faster on this warm synthetic input. Peak process RSS was 45,104 KiB, including the 32 MiB fixture-generation buffer; CPU time was 0.12 s user / 0.14 s system. This is not a general throughput guarantee for real disks or photo libraries.
 
 The release test build succeeded with a local Rust-toolchain warning: `rust-objcopy` could not load `libLLVM.dylib` while stripping symbols. The executables still built and all benchmark assertions ran. `/usr/bin/time -l` could not read `kern.clockrate` in the sandbox, so final resource measurements use Zsh's built-in `time` instead.
+
+## Small-file follow-up · November 16, 2026
+
+For files at most 16 KiB the sample already hashes every byte in order. Reusing it removes a redundant open/read/hash while preserving the final byte comparison and version checks. Zero-use cache counters also skip SQL updates.
+
+Run the focused benchmark with:
+
+```sh
+cargo test --locked --release -p scan-engine benchmark_complete_sample_reuse -- --ignored --nocapture
+```
+
+Six rounds alternate the strategy order over the same 1,000 files of 8 KiB. Both check native identity around reads and assert the exact SHA-256. Cumulative hashing-stage time was **0.262 s with the second read** and **0.134 s with sample reuse**. Fixture creation, SQLite, grouping, and final byte comparison are outside this focused measurement; it does not measure total scan speed.
+
+Separate duplicate-heavy 100,000-file runs on the same Mac passed their assertions but varied substantially:
+
+| Metric | Before follow-up | After follow-up |
+| --- | ---: | ---: |
+| Fixture creation | 6.3 s | 9.2 s |
+| Index, first scan | 0.90 s | 1.03 s |
+| Verification + commit, first | 10.80 s | 16.73 s |
+| Total, first scan | 11.70 s | 17.75 s |
+| Total, repeat scan | 9.70 s | 16.15 s |
+| Cancellation, indexing / verification | 48.3 / 75.8 ms | 49.7 / 74.7 ms |
+| Peak process RSS | 16,640 KiB | 16,752 KiB |
+| Whole-process CPU, user / system | 3.38 / 27.68 s | 4.01 / 34.99 s |
+
+Fixture creation also slowed, showing environmental variability beyond the changed hashing stage. These unpaired end-to-end timings do not establish a speedup or isolate the cause of the difference. The earlier small-file performance regression remains open; neither privileged cold-cache measurements nor device-level I/O tracing was performed.

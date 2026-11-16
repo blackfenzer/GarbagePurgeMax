@@ -72,12 +72,14 @@ Deferred beyond this read-only release. These are implementation tasks, not skip
 
 ## v1.0 · Product hardening
 
-Current hardening includes bounded thumbnails and candidate previews, decoder limits, WAL readers, keyboard-focusable review buttons, safer export, and regression tests. Full accessibility audits, real volume statistics, app-specific cache policies, signed installers, updates, and publication remain open.
+Current hardening includes bounded thumbnails and candidate previews, decoder limits, WAL readers, keyboard-focusable review buttons, safer export, and regression tests. Overview now shows OS-reported volume capacity and available space for the latest scan in this session. Full accessibility audits, app-specific cache policies, signed installers, updates, and publication remain open.
 
+- [x] Show volume capacity and space available to the caller in Overview after a scan, distinct from logical folder size. Query off the UI thread, label the snapshot, and preserve results on query failure. macOS native query and regression tests pass; Windows execution and visual review remain pending.
 - [ ] Complete dashboard and Inspector presentation for supported volume statistics, storage categories, findings, recent scans, and review and recovery outcomes.
 - [ ] Curate per-app cache policies with platform-specific fixtures and clear evidence for each classification.
 - [ ] Harden accessibility, keyboard navigation, throughput, memory limits, and error recovery on supported OS versions. Measure regressions against the same fixtures.
-- [ ] Package, sign, notarize where applicable, and define the release and update process. Publish release builds, support docs, architecture diagram, reproducible benchmark results, screenshots, and a short demo.
+- [x] Build unsigned development ZIPs for native macOS arm64 and Windows x64 hosts, with layout, architecture, and failure-preservation tests. The macOS archive is built; packaged launch and actual Windows packaging still need platform testing.
+- [ ] Sign, notarize where applicable, and define the release and update process. Publish release builds, support docs, architecture diagram, reproducible benchmark results, screenshots, and a short demo.
 - [ ] Evaluate deeper archive previews and workspace customization against user evidence. Keep analysis local and require opt-in for any future telemetry.
 
 ## Decisions to validate as the work reaches them

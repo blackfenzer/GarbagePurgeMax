@@ -37,6 +37,9 @@ jobs:
       - name: Test the SQLite schema
         run: python -B crates/scan-store/tests/test_schema.py
 
+      - name: Test native package layouts
+        run: python -B .github/scripts/test_package.py
+
       - name: Run the workspace tests
         run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN cargo test --locked --workspace --target x86_64-pc-windows-msvc
 

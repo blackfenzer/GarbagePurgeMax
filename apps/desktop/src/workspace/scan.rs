@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use gpui_kit::{AppContext as _, Context, PathPromptOptions};
-use scan_engine::{FileRecord, ScanProgress, ScanSummary};
+use scan_engine::{FileRecord, ScanProgress, ScanSummary, VolumeSpace};
 use scan_store::SavedScan;
 
 use super::{Page, Workspace, storage};
@@ -46,6 +46,7 @@ impl Drop for ActiveScan {
 
 pub(super) struct ScanReport {
     pub root: PathBuf,
+    pub volume_space: Option<Result<VolumeSpace, String>>,
     pub summary: ScanSummary,
     pub largest_files: Vec<FileRecord>,
     pub large_file_count: u64,

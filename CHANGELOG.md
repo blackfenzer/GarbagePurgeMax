@@ -4,6 +4,8 @@
 
 ### Added
 
+- Overview volume capacity and available-space snapshots, queried in the background with native paths. Unavailable statistics preserve completed scan results; cancelled scans skip the query. Values remain separate from logical folder sizes and reclaimable space.
+- Unsigned native development ZIP generation for macOS arm64 and Windows x64, with package layout, architecture, and failure-preservation tests in CI.
 - Observed empty-folder records, a paged Review tab, and explicit directory rows in CSV.
 - Protected, high, and unknown risk labels with reasons in Review, Inspector, and CSV; every tier remains review-only.
 - Incremental full SHA-256 caching for duplicate candidates of at least 64 KiB, validated against native file identity and metadata. Matches still undergo byte comparison.
@@ -31,6 +33,7 @@
 
 ### Fixed
 
+- Duplicate candidates at most 16 KiB reuse their complete sample hash, avoiding a redundant read while retaining final byte comparison and identity checks. Zero-use cache counters no longer issue SQL updates.
 - Large scans no longer block saved-history readers: the local index uses SQLite WAL.
 - Image analysis and previews reject changed files and links, enforce decode limits, and honor cancellation. Review uses bounded thumbnails and reports preview failures.
 - CSV export streams rows, uses unique temporary files, preserves unrelated `.part` files, and refuses the scan tree and app-data directory.
@@ -45,7 +48,8 @@
 
 ### Verified
 
-- Current Apple Silicon pass: 57 Rust tests, 6 schema tests, formatting, strict Clippy, and desktop build.
+- Current Apple Silicon pass: 63 Rust tests, formatting, strict Clippy, debug/release builds, and macOS archive contents. The preceding pass also passed 6 schema and 6 packaging tests. Packaged launch and Windows execution remain untested.
+- A focused alternating-order benchmark confirms less work in small-file hashing; full-scan measurements remain variable and do not establish an end-to-end speedup.
 - Three separately executed release benchmarks, including eight revalidated full-hash cache hits on a 256 MiB fixture. Current small-file timings and the earlier baseline are recorded separately in `docs/benchmarks.md`.
 
 - Apple Silicon build and workspace tests.

@@ -25,12 +25,14 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `crates/scan-engine/src/file_version.rs` | Shares native identity and metadata checks between duplicate analysis, image analysis, and previews. | In source |
 | `crates/scan-engine/src/hash_cache.rs` | Defines the small caller-owned cache interface, with no database dependency. | In source |
 | `crates/scan-engine/src/risk.rs` | Classifies conservative location risks; every tier stays review-only. | In source |
+| `crates/scan-engine/src/volume_space.rs` | Queries OS-reported volume capacity and available space with native paths and checked byte arithmetic. | In source |
 | `crates/scan-store/src/hash_cache.rs` | Implements transactional cache reads, writes, and usage accounting. | In source |
 | `crates/scan-engine/src/cleanup_candidates.rs` | Matches indexed file metadata against review-only cleanup rules and explains each match. | In source |
 | `crates/scan-engine/src/similar_images.rs` | Decodes supported images read-only with at most two workers, computes 64-bit difference hashes, and groups images within 6 bits of a reference image. | In source |
 | `crates/scan-engine/src/file_types.rs` | Names a broad file type from the path extension, with an Other fallback. | In source |
 | `crates/scan-engine/tests` | Exercises deterministic fixture trees in temporary directories. | In source |
 | `crates/scan-store` | Owns the SQLite migration, transactional writer, and queries for scan history and file search. | In source |
+| `.github/scripts` | Builds unsigned native development packages and tests archive layout and failure preservation. | In source |
 
 The desktop depends on the scanner and storage crates. Storage uses the scanner’s metadata types. The scanner has no SQLite or GPUI dependency. Keep file analysis and platform code in the scanner crate.
 
@@ -51,7 +53,13 @@ The engine streams file and directory observations through `scan_entries`, a syn
 
 The desktop runs one scan on the GPUI background executor. It samples a single shared progress snapshot at 100 ms intervals and receives completion through a one-slot channel. It streams file metadata to SQLite and retains at most 200 records while selecting the 100 largest in case saving fails. The large-file threshold is 1 GiB. Exclusions are saved atomically in the app data directory and apply to future scans. The background scan reads a snapshot before walking the tree.
 
-The analyzer reads one equal-size candidate set at a time from SQLite. It samples up to 8 KiB from each end with SHA-256, hashes remaining candidates in full, and compares matching candidates byte for byte. Each analysis set retains its candidates in memory. The analyzer compares available indexed size and timestamps before reading and revalidates native identity and metadata around each read. It captures file identity when verification first opens the file. A replacement that preserves all recorded metadata before that point can pass the initial check. The analyzer skips symlinks and reparse points and counts hard-linked names as one file identity. The traversal benchmark measures throughput, peak worker memory, and cancellation latency on a 100,000-file fixture.
+The analyzer reads one equal-size candidate set at a time from SQLite. It samples up to 8 KiB from each end with SHA-256, hashes remaining candidates in full, and compares matching candidates byte for byte. For files at most 16 KiB the sample covers every byte in order, so it already is the full hash; no second hash read is needed. Final byte comparison still reopens and revalidates each file. Each analysis set retains its candidates in memory. The analyzer compares available indexed size and timestamps before reading and revalidates native identity and metadata around each read. It captures file identity when verification first opens the file. A replacement that preserves all recorded metadata before that point can pass the initial check. The analyzer skips symlinks and reparse points and counts hard-linked names as one file identity. The traversal benchmark measures throughput, peak worker memory, and cancellation latency on a 100,000-file fixture.
+
+## Volume-space snapshot
+
+After a scan finishes and commits, the background job queries capacity and space available to the caller for the selected directory's volume. macOS uses `statfs` and its 64-bit block counts (Darwin's `statvfs` counters are only 32-bit); other Unix targets use `statvfs`. Windows uses [`GetDiskFreeSpaceExW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexw), preserving UTF-16 paths and adding the required trailing separator for UNC shares. Windows capacity may reflect per-user quotas. Byte multiplication is checked; zero capacity, inconsistent counters, and OS failures produce an unavailable state rather than fabricated numbers.
+
+Overview presents this as a last-scan snapshot for the named folder's volume, separately from logical scanned bytes. It is not reclaimable space or a physical disk inventory; APFS shared space and quotas can affect the values. Statistics are session-only and are not added to saved scan history or CSV. A failed query never discards the completed scan. Already-cancelled scans skip the query. Native filesystem calls may block on an unresponsive volume; they run off the GPUI thread but cannot be interrupted mid-call. No dependency or database migration is needed.
 
 ## SQLite scan index
 

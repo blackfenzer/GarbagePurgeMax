@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use scan_engine::{
     FileRecord, ScanEntry, ScanProgress, ScanSummary, find_similar_images, is_hashable_image,
-    scan_entries, verify_duplicate_group_cached,
+    scan_entries, verify_duplicate_group_cached, volume_space,
 };
 use scan_store::ScanWriter;
 
@@ -93,6 +93,11 @@ pub(in crate::workspace) fn inspect_and_save(
         }
     }
     report.save_error = save_error;
+    // Optional OS statistics must never discard a successful scan or delay an
+    // already-cancelled scan. This query stays on the background worker.
+    if !report.summary.cancelled && !cancel.load(Ordering::Relaxed) {
+        report.volume_space = Some(volume_space(&report.root).map_err(|error| error.to_string()));
+    }
     Ok(report)
 }
 
@@ -206,6 +211,7 @@ fn inspect_folder(
     retain_largest(&mut largest_files);
     Ok(ScanReport {
         root,
+        volume_space: None,
         summary,
         largest_files,
         large_file_count,
@@ -310,6 +316,30 @@ mod tests {
         assert!(report.saved.is_none());
         assert_eq!(report.save_error.as_deref(), Some("no storage"));
         assert_eq!(report.largest_files.len(), 1);
+        assert!(report.volume_space.as_ref().is_some_and(Result::is_ok));
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_volume_statistics_do_not_discard_a_completed_scan() -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("tree");
+        std::fs::create_dir(&root)?;
+        let report = inspect_and_save(
+            root.clone(),
+            Ok(fixture.path().join("app-data/scans.sqlite3")),
+            &AtomicBool::new(false),
+            |activity| {
+                if activity.analyzing {
+                    // Simulate a selected directory disappearing after indexing.
+                    std::fs::remove_dir(&root).expect("remove empty fixture");
+                }
+            },
+        )?;
+        assert!(!report.summary.cancelled);
+        assert!(report.save_error.is_none());
+        assert!(report.saved.is_some());
+        assert!(report.volume_space.as_ref().is_some_and(Result::is_err));
         Ok(())
     }
 
@@ -412,6 +442,7 @@ mod tests {
             },
         )?;
         assert!(report.summary.cancelled);
+        assert!(report.volume_space.is_none());
         let saved = report.saved.unwrap();
         assert!(saved.cancelled);
         assert!(!saved.duplicates_analyzed);

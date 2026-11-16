@@ -1,5 +1,27 @@
 # Development progress
 
+## 2026-11-16 · Overview volume-space snapshot
+
+Implemented the next read-only dashboard task: Overview shows capacity and space available to the caller for the selected directory's volume after a scan. The engine owns native `statfs`/`statvfs` and `GetDiskFreeSpaceExW` adapters; GPUI only renders the worker's result. macOS uses 64-bit block counters to avoid the narrower Darwin `statvfs` representation. No dependency or schema change was needed.
+
+The card identifies the scan root, labels the numbers as a snapshot, and explains quota/shared-storage limits. It does not estimate reclaimable space. Query failures preserve completed results; already-cancelled scans skip the query. Snapshots remain session-only rather than appearing as historical or live measurements. Native calls on unavailable/network volumes can still block their background worker until the OS returns.
+
+Verified on Apple Silicon/macOS 27.2: **63 Rust tests passed**, four benchmark tests ignored by the normal suite; Rustfmt, strict Clippy, and the debug app build passed. New tests cover allocation arithmetic beyond 32-bit counts, overflow, full/invalid volumes, native Unicode directory paths, missing paths, regular files, symlinks, and preserving a completed scan after its selected directory disappears. Existing cancellation and storage-fallback tests now verify volume-query behavior. Windows-only tests cover UNC/extended paths and unpaired UTF-16 code units, but have not run here.
+
+The release build and rebuilt macOS package passed; ZIP integrity, launch metadata, executable permissions, and equality with the release binary were verified separately from launch. The existing local `rust-objcopy` missing-`libLLVM.dylib` stripping warning remains. SQL and packaging code are unchanged, so their six-test suites were not repeated. End-to-end benchmarks were not rerun; earlier measurements do not include this query. Interactive checks remain deferred at the user's request. Native Windows queries, mounted volumes, quota behavior, and the new Overview card still need platform testing. Next dashboard work: saved findings/recent-scan presentation; cleanup and recovery remain outside this read-only release.
+
+## 2026-11-16 · Small-file hashing and unsigned packages
+
+- Duplicate candidates at most 16 KiB now reuse the sample's complete SHA-256 instead of reopening and hashing twice. Final byte comparison and file-version revalidation remain mandatory. A boundary regression covers empty files through 16 KiB + 1, including a changed middle byte outside the sample. Cache usage skips SQL writes when both counters are zero.
+- `.github/scripts/package.py` builds a native release binary and creates an unsigned macOS application ZIP or Windows executable ZIP. It uses Cargo's artifact path, checks binary architecture, preserves an existing ZIP on failure, and cleans staging files. Six Python tests cover both layouts and validation/failure paths; both CI workflows now run them.
+- Built `target/packages/Storage-Clinic-0.1.0-macos-arm64.zip` on Apple Silicon. Checked ZIP integrity, plist launch metadata, executable permissions, and embedded binary equality. The linked macOS libraries are system libraries/frameworks. This is archive validation, not a successful packaged launch.
+
+Automated checks on macOS 27.2: **58 Rust tests passed**, **6 schema tests passed**, **6 packaging tests passed**, Rustfmt, strict Clippy, and debug/release app builds passed. Four benchmarks are ignored in the default suite. This follow-up separately ran the focused hashing benchmark and the duplicate-heavy integrated benchmark before and after the change; the other two integrated benchmarks were run in the preceding hardening pass. The local release build still reports the previously recorded missing-`libLLVM.dylib` symbol-stripping warning.
+
+The focused hashing stage took 0.262 s with rereading versus 0.134 s with reuse over six alternating rounds of 1,000 files. Integrated timings varied substantially (11.70 / 9.70 s before, 17.75 / 16.15 s after); fixture creation also slowed, so the end-to-end regression is not considered resolved. See [measurements](benchmarks.md#small-file-follow-up--november-16-2026).
+
+Deferred at the user's request: interactive app testing. Packaged launch, Windows native packaging/execution, mounted volumes, real-photo calibration, accessibility, signing, and notarization remain unverified or outstanding. The application stays read-only; cleanup and recovery remain future work.
+
 ## 2026-11-16 · Read-only completion and hardening
 
 | Area | Implemented and verified |

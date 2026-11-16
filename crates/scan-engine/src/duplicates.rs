@@ -108,20 +108,28 @@ impl Verifier<'_> {
                 }
             }
 
-            for candidates in by_sample.into_values().filter(|files| files.len() > 1) {
+            for (sample_hash, candidates) in
+                by_sample.into_iter().filter(|(_, files)| files.len() > 1)
+            {
                 let mut by_hash = BTreeMap::<_, VecDeque<_>>::new();
                 for candidate in candidates {
                     if self.is_cancelled() {
                         return;
                     }
-                    let full = candidate.open().and_then(|mut file| {
-                        self.hash(
-                            candidate.path(),
-                            &mut file,
-                            candidate.version,
-                            HashStage::Full,
-                        )
-                    });
+                    // At this size the head and tail cover every byte in order. The
+                    // subsequent byte comparison still reopens and revalidates each file.
+                    let full = if candidate.version.len <= (SAMPLE_BYTES * 2) as u64 {
+                        Ok(sample_hash)
+                    } else {
+                        candidate.open().and_then(|mut file| {
+                            self.hash(
+                                candidate.path(),
+                                &mut file,
+                                candidate.version,
+                                HashStage::Full,
+                            )
+                        })
+                    };
                     if let Some(hash) = self.observe(candidate.path(), full) {
                         by_hash.entry(hash).or_default().push_back(candidate);
                     }
@@ -463,6 +471,114 @@ mod tests {
         assert_eq!(
             analysis.groups[0].paths,
             [root.path().join("b"), root.path().join("c")]
+        );
+        Ok(())
+    }
+    #[test]
+    fn verifies_complete_hashes_at_the_sample_boundary() -> io::Result<()> {
+        for length in [
+            0,
+            1,
+            SAMPLE_BYTES,
+            SAMPLE_BYTES * 2 - 1,
+            SAMPLE_BYTES * 2,
+            SAMPLE_BYTES * 2 + 1,
+        ] {
+            let root = tempfile::tempdir()?;
+            let contents = vec![42; length];
+            let mut files = Vec::new();
+            for name in ["a", "b"] {
+                let path = root.path().join(name);
+                fs::write(&path, &contents)?;
+                files.push(FileRecord {
+                    path,
+                    logical_bytes: length as u64,
+                    created: None,
+                    modified: None,
+                    read_only: false,
+                });
+            }
+            if length > 0 {
+                let mut distinct = contents.clone();
+                // At 16 KiB + 1 this is the one byte the sample does not cover.
+                distinct[length / 2] ^= 1;
+                let path = root.path().join("different");
+                fs::write(&path, distinct)?;
+                files.push(FileRecord {
+                    path,
+                    logical_bytes: length as u64,
+                    created: None,
+                    modified: None,
+                    read_only: false,
+                });
+            }
+            let analysis = verify_duplicate_group(&files, &AtomicBool::new(false));
+            assert_eq!(analysis.errors, 0, "length {length}");
+            assert_eq!(analysis.groups.len(), 1, "length {length}");
+            assert_eq!(
+                analysis.groups[0].paths,
+                [root.path().join("a"), root.path().join("b")]
+            );
+            let expected: Fingerprint = Sha256::digest(&contents).into();
+            assert_eq!(analysis.groups[0].hash, expected, "length {length}");
+        }
+        Ok(())
+    }
+    #[test]
+    #[ignore = "benchmark: run in release with --ignored --nocapture"]
+    fn benchmark_complete_sample_reuse() -> io::Result<()> {
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir()?;
+        let contents = vec![42_u8; SAMPLE_BYTES];
+        let expected: Fingerprint = Sha256::digest(&contents).into();
+        let mut paths = Vec::new();
+        for index in 0..1_000 {
+            let path = root.path().join(format!("file-{index}"));
+            fs::write(&path, &contents)?;
+            paths.push(path);
+        }
+        let cancel = AtomicBool::new(false);
+        let mut baseline = Duration::ZERO;
+        let mut reused = Duration::ZERO;
+        // Alternate order over the same files so fixture creation and cache warming
+        // do not systematically favor either hashing strategy.
+        for round in 0..6 {
+            for reread in if round % 2 == 0 {
+                [true, false]
+            } else {
+                [false, true]
+            } {
+                let started = Instant::now();
+                for path in &paths {
+                    let (mut file, version) = FileVersion::open(path)?;
+                    let sample = hash_sample(&mut file, version.len, &cancel)?;
+                    version.check(path, &file)?;
+                    drop(file);
+                    let hash = if reread {
+                        let (mut file, current) = FileVersion::open(path)?;
+                        assert!(current == version);
+                        let hash = hash_full(&mut file, current.len, &cancel)?;
+                        current.check(path, &file)?;
+                        hash
+                    } else {
+                        sample
+                    };
+                    assert_eq!(hash, expected);
+                }
+                if reread {
+                    baseline += started.elapsed();
+                } else {
+                    reused += started.elapsed();
+                }
+            }
+        }
+        println!(
+            "Hashing stage, 6 × 1,000 files of 8 KiB: reread {:.3} s; reuse {:.3} s",
+            baseline.as_secs_f64(),
+            reused.as_secs_f64()
+        );
+        println!(
+            "Both strategies check identity around reads; final byte comparison is outside this focused measurement."
         );
         Ok(())
     }

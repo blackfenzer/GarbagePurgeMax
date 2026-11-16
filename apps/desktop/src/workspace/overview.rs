@@ -9,7 +9,11 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use super::{Page, Workspace, exclusions::path_label, scan::format_bytes};
+use super::{
+    Page, Workspace,
+    exclusions::path_label,
+    scan::{ScanReport, format_bytes},
+};
 
 pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoElement {
     let scan = &workspace.scan;
@@ -113,7 +117,45 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl Int
                         .child(results_button),
                 ),
         )
+        .children(
+            scan.report
+                .as_ref()
+                .filter(|_| scan.active.is_none())
+                .map(|report| volume_card(report, cx)),
+        )
         .child(exclusions_card(workspace, cx))
+}
+
+fn volume_card(report: &ScanReport, cx: &Context<Workspace>) -> impl IntoElement {
+    let mut card = div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .w_full()
+        .max_w(px(640.0))
+        .p_5()
+        .rounded_lg()
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(div().font_semibold().child("Volume space · last scan"))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!("Volume containing {}", report.root.display())),
+        );
+    card = match &report.volume_space {
+        Some(Ok(space)) => card
+            .child(div().text_sm().child(format!("{} available · {} capacity",
+                format_bytes(space.available_bytes), format_bytes(space.capacity_bytes))))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                .child("Sampled when the scan finished; not live. OS-reported values may reflect quotas or shared storage. This is volume space, not folder size or reclaimable space.")),
+        Some(Err(error)) => card.child(div().text_sm().text_color(cx.theme().muted_foreground)
+            .child(format!("Volume space unavailable: {error}. Scan results are still available."))),
+        None => card.child(div().text_sm().text_color(cx.theme().muted_foreground)
+            .child("Volume space was not sampled because the scan was cancelled.")),
+    };
+    card
 }
 
 fn exclusions_card(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoElement {

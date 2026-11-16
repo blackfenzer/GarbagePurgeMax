@@ -45,6 +45,9 @@ impl HashCache for ScanWriter<'_> {
 
 impl ScanWriter<'_> {
     pub fn record_cache_usage(&mut self, hits: u64, misses: u64) -> rusqlite::Result<()> {
+        if hits == 0 && misses == 0 {
+            return Ok(());
+        }
         self.scan.hash_cache_hits += hits;
         self.scan.hash_cache_misses += misses;
         self.transaction.execute(

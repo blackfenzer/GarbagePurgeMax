@@ -13,6 +13,7 @@ mod file_version;
 mod hash_cache;
 mod risk;
 mod similar_images;
+mod volume_space;
 
 pub use cleanup_candidates::{CleanupCandidate, CleanupKind, OLD_DOWNLOAD_DAYS, cleanup_candidate};
 pub use duplicates::{
@@ -25,6 +26,7 @@ pub use similar_images::{
     SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis, SimilarImageGroup, difference_hash,
     find_similar_images, image_preview, is_hashable_image,
 };
+pub use volume_space::{VolumeSpace, volume_space};
 
 #[derive(Clone, Debug)]
 pub struct FileRecord {

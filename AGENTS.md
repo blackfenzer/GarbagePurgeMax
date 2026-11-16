@@ -43,4 +43,4 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --locked -p storage-clinic
 ```
 
-Run `python3 -B crates/scan-store/tests/test_schema.py` for SQL changes. Use synthetic fixtures for filesystem and cleanup tests. Record build, automated tests, benchmarks, and interactive smoke results separately. Update [the task plan](docs/tasks.md), [progress notes](docs/progress.md), and [changelog](CHANGELOG.md) where the change affects those records.
+Run `python3 -B crates/scan-store/tests/test_schema.py` for SQL changes and `python3 -B .github/scripts/test_package.py` for packaging changes. Use synthetic fixtures for filesystem and cleanup tests. Record build, automated tests, benchmarks, and interactive smoke results separately. Update [the task plan](docs/tasks.md), [progress notes](docs/progress.md), and [changelog](CHANGELOG.md) where the change affects those records.

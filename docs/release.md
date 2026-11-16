@@ -12,11 +12,20 @@ cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo build --locked -p storage-clinic
 python3 -B crates/scan-store/tests/test_schema.py
+python3 -B .github/scripts/test_package.py
 ```
 
 On Windows use `python` if `python3` is unavailable. The lockfile is required. The macOS and Windows workflows run these checks, but the modified workflows still need a remote run. Local results are in [progress](progress.md), with independent release measurements in [benchmarks](benchmarks.md).
 
-The local optimized build also passed with `cargo build --locked --release -p storage-clinic`; its executable is `target/release/storage-clinic`. It is not a signed/notarized application bundle.
+The local optimized build also passed with `cargo build --locked --release -p storage-clinic`; its executable is `target/release/storage-clinic`.
+
+## Unsigned development packages
+
+Run `python3 -B .github/scripts/package.py` on Apple Silicon macOS or `python -B .github/scripts/package.py` on Windows x64. The script builds the locked release binary, uses Cargo's reported artifact path, validates its architecture, and atomically writes `target/packages/Storage-Clinic-<version>-<platform>.zip` (under the configured Cargo target directory). Packaging failure preserves an existing archive.
+
+The macOS ZIP contains `Storage Clinic.app` with launch metadata and executable permissions. The Windows ZIP contains `storage-clinic.exe`. Extract the ZIP before opening. Both include a README explaining read-only behavior and the shared app-data location. No signing, notarization, installer registration, or update service is included. An OS may block downloaded unsigned applications; use the source workflow rather than disabling security settings.
+
+The Apple Silicon package was built locally and its ZIP contents checked against the compiled executable. Both layouts, target validation, and failure preservation have automated tests. Packaged launch has not been tested; Windows runtime dependencies and native packaging must be checked on Windows before distribution.
 
 Development executable: `target/debug/storage-clinic` on macOS, `target/debug/storage-clinic.exe` on Windows (or the equivalent target-specific Cargo directory). Run it in an unlocked interactive OS session with `cargo run --locked -p storage-clinic`. A successful compile does not verify native picker, rendering, or OS service availability.
 
@@ -38,6 +47,7 @@ The fixture contains searchable files, duplicates, same-size differences, sparse
 6. Add an exclusion, scan again from History, and compare results. Repeat a large-duplicate scan and confirm cache hits without treating hard-link aliases as separate duplicate copies.
 7. While a scan runs, open a completed scan and search its saved results. Close/restart the app and reopen both completed and partial history.
 8. Repeat with a mounted test volume. On Windows, also check native paths, permission errors, and reparse points on Windows 11 x64.
+9. After completion, return to Overview and inspect Volume space. Confirm capacity/available bytes are labelled as a last-scan snapshot, separate from folder logical size. Repeat with a cancelled scan and confirm no space reading is shown. Test a quota-limited account and mounted volume where available; unavailable statistics must leave scan results usable.
 
 Record platform/version, exact build revision, fixture, result, and any differences. Capture screenshots of Overview, Results/Inspector, and each Review tab plus a short Select → Scan → Review → Export demo only after these steps actually run. No screenshots or demo are claimed for the current pass.
 
@@ -46,6 +56,7 @@ Record platform/version, exact build revision, fixture, result, and any differen
 | Gate | Current status |
 | --- | --- |
 | Local automated tests and debug build | Passed on macOS; see progress |
+| Unsigned development packages | macOS archive built and checked; launch and Windows native packaging pending |
 | Integrated macOS UI | Blocked during this pass by the locked desktop/native pasteboard service |
 | Windows CI and Windows 11 UI | Earlier baseline CI passed; current changes and Windows 11 UI untested |
 | Mounted volumes and real-photo calibration | Not tested |

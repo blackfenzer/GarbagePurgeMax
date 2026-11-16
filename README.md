@@ -34,6 +34,14 @@ Repeat scans reuse full duplicate hashes for files at least 64 KiB only after re
 
 The app saves file paths and metadata locally under `~/Library/Application Support/Storage Clinic` on macOS or `%LOCALAPPDATA%\Storage Clinic` on Windows. If saving fails, the results view keeps the 100 largest files in a temporary preview.
 
+After a scan, Overview shows the containing volume's OS-reported capacity and available space. This is a snapshot from the latest scan in this session, separate from folder logical size; it may reflect quotas and shared storage. It is not a reclaimable-space estimate or a live reading. Unavailable statistics leave scan results intact, and cancelled scans skip the query. Volume snapshots are not saved in history or CSV.
+
+## Unsigned development package
+
+Run `python3 -B .github/scripts/package.py` on Apple Silicon macOS, or `python -B .github/scripts/package.py` on Windows x64. It builds the locked release executable and writes a ZIP under Cargo's `target/packages` directory. The macOS ZIP contains `Storage Clinic.app`; the Windows ZIP contains `storage-clinic.exe`. Extract before opening. Packages use the same local history as development builds.
+
+The macOS archive has been built and checked, but its launch still needs an interactive test. Windows packaging has layout tests only. These packages are unsigned and not notarized; if the OS blocks them, use the source build workflow. See [release checks](docs/release.md).
+
 ## Development
 
 - [`apps/desktop`](apps/desktop) contains native startup, scan job coordination, and the Overview, Results, History, and Inspector views.
@@ -52,7 +60,7 @@ To generate the synthetic tree used for the desktop smoke test, run `cargo run -
 
 | Platform | Build and tests | Desktop smoke test |
 | --- | --- | --- |
-| macOS 27.2, Apple Silicon | Current pass: rustfmt, strict Clippy, 57 Rust tests, 6 schema tests, and the app build | Earlier baseline passed; current UI changes need an unlocked interactive session |
+| macOS 27.2, Apple Silicon | Current pass: rustfmt, strict Clippy, 63 Rust tests, debug/release builds; earlier schema and packaging checks passed | Earlier baseline passed; current UI changes and packaged launch need an unlocked interactive session |
 | Windows x64 | Earlier baseline passed on `windows-2022`; current changes await CI | Needs testing on Windows 11 |
 
 The current 100,000-file release measurements took 4.15 s for mostly unique files and 12.33 s for duplicate-heavy files on the first pass, with about 17.3 MiB peak process RSS. Repeats took 3.87 s and 16.32 s respectively; the slower duplicate-heavy repeat remains a performance concern. Review queries stayed below 55 ms and cancellation returned within 85 ms in these runs. A separate 256 MiB duplicate fixture improved from 0.167 s to 0.035 s using revalidated full hashes. See [benchmarks](docs/benchmarks.md) for the method, earlier baseline, and limits, and [architecture](docs/architecture.md) for the design.
@@ -64,7 +72,7 @@ The current 100,000-file release measurements took 4.15 s for mostly unique file
 - Older scans need a new scan to add duplicate findings. The app shows the first scan error alongside the error counts.
 - Images over 64 MiB encoded size or 16,384 pixels per side are skipped. Decoder allocations have a best-effort 64 MiB budget per worker, with at most two workers. The similarity threshold still needs testing on real photos.
 - Protected-location labels are conservative path rules, not complete OS or cloud-provider detection.
-- Release builds are not packaged, signed, or notarized yet. Run the app with `cargo run`.
+- Unsigned development ZIPs can be built locally. Signed distribution, notarization, and updates remain open.
 
 
 ## Release and demo checklist
