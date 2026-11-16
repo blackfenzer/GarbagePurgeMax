@@ -1,9 +1,10 @@
-use std::io;
+use std::io::{self, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 
+use crate::{FileRecord, file_version::FileVersion};
 use image::GrayImage;
 use image::imageops::{self, FilterType};
 
@@ -56,20 +57,25 @@ pub fn difference_hash(image: &GrayImage) -> u64 {
         })
 }
 
-/// Decodes images read-only on every core and hashes them. Each image joins the closest
+/// Decodes images read-only with at most two workers and hashes them. Each image joins the closest
 /// earlier reference within `SIMILAR_IMAGE_DISTANCE`, or becomes a reference itself, so
 /// every reported distance is measured to the group's reference. Cancellation discards groups.
-pub fn find_similar_images(paths: &[PathBuf], cancelled: &AtomicBool) -> SimilarImageAnalysis {
+pub fn find_similar_images(files: &[FileRecord], cancelled: &AtomicBool) -> SimilarImageAnalysis {
     let next = AtomicUsize::new(0);
-    let hashed = Mutex::new(Vec::with_capacity(paths.len()));
-    let workers = thread::available_parallelism().map_or(1, usize::from);
+    let hashed = Mutex::new(Vec::with_capacity(files.len()));
+    let workers = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(2)
+        .min(files.len());
     thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
                 while !cancelled.load(Ordering::Relaxed) {
                     let index = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(path) = paths.get(index) else { return };
-                    let hash = image_hash(path);
+                    let Some(record) = files.get(index) else {
+                        return;
+                    };
+                    let hash = image_hash(record, cancelled);
                     hashed.lock().expect("image hash lock").push((index, hash));
                 }
             });
@@ -77,27 +83,34 @@ pub fn find_similar_images(paths: &[PathBuf], cancelled: &AtomicBool) -> Similar
     });
 
     let mut analysis = SimilarImageAnalysis::default();
+    let mut hashed = hashed.into_inner().expect("image hash lock");
+    hashed.sort_unstable_by_key(|(index, _)| *index);
+    for (index, hash) in &hashed {
+        if let Err(error) = hash
+            && error.kind() != io::ErrorKind::Interrupted
+        {
+            analysis.errors += 1;
+            analysis
+                .first_error
+                .get_or_insert_with(|| format!("{}: {error}", files[*index].path.display()));
+        }
+    }
     if cancelled.load(Ordering::Relaxed) {
         analysis.cancelled = true;
         return analysis;
     }
-    let mut hashed = hashed.into_inner().expect("image hash lock");
-    hashed.sort_unstable_by_key(|(index, _)| *index);
     let mut groups: Vec<SimilarImageGroup> = Vec::new();
     for (index, hash) in hashed {
-        let path = paths[index].clone();
+        if cancelled.load(Ordering::Relaxed) {
+            analysis.cancelled = true;
+            return analysis;
+        }
+        let path = files[index].path.clone();
         let hash = match hash {
             Ok(hash) => hash,
-            Err(error) => {
-                analysis.errors += 1;
-                analysis
-                    .first_error
-                    .get_or_insert_with(|| format!("{}: {error}", path.display()));
-                continue;
-            }
+            Err(_) => continue,
         };
-        // ponytail: compares each image with every reference, O(images × groups).
-        // Index the hashes (a BK-tree) if large photo libraries stall here.
+        // shortcut: O(images × groups), add a hash index if measured photo libraries stall here.
         let closest = groups
             .iter_mut()
             .map(|group| ((group.members[0].hash ^ hash).count_ones(), group))
@@ -119,16 +132,79 @@ pub fn find_similar_images(paths: &[PathBuf], cancelled: &AtomicBool) -> Similar
         }
     }
     groups.retain(|group| group.members.len() > 1);
+    if cancelled.load(Ordering::Relaxed) {
+        analysis.cancelled = true;
+        return analysis;
+    }
     analysis.groups = groups;
     analysis
 }
 
-fn image_hash(path: &Path) -> io::Result<u64> {
-    let image = image::ImageReader::open(path)?
-        .with_guessed_format()?
-        .decode()
-        .map_err(io::Error::other)?;
+// Two workers, each with a 64 MiB decoder allocation budget and bounded dimensions.
+// Decoder limits do not include every codec's internal allocation or thumbnail conversion.
+const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DIMENSION: u32 = 16_384;
+
+fn image_hash(record: &FileRecord, cancelled: &AtomicBool) -> io::Result<u64> {
+    let image = read_image(record, cancelled)?;
     Ok(difference_hash(&image.to_luma8()))
+}
+
+/// A bounded PNG preview, read with the same version checks and decoder limits as analysis.
+pub fn image_preview(record: &FileRecord, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
+    let image = read_image(record, cancelled)?;
+    let mut png = io::Cursor::new(Vec::new());
+    image
+        .thumbnail(320, 220)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .map_err(io::Error::other)?;
+    Ok(png.into_inner())
+}
+
+fn read_image(record: &FileRecord, cancelled: &AtomicBool) -> io::Result<image::DynamicImage> {
+    let (file, version) = FileVersion::open(&record.path)?;
+    version.check_record(record)?;
+    if version.len > MAX_DECODE_BYTES {
+        return Err(io::Error::other(
+            "image exceeds the 64 MiB encoded-file limit",
+        ));
+    }
+    let input = CancelReader {
+        inner: &file,
+        cancelled,
+    };
+    let mut reader = image::ImageReader::new(BufReader::new(input)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    let image = reader.decode().map_err(io::Error::other)?;
+    version.check(&record.path, &file)?;
+    Ok(image)
+}
+
+struct CancelReader<'a, R> {
+    inner: R,
+    cancelled: &'a AtomicBool,
+}
+
+impl<R: Read> Read for CancelReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancelled.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "image analysis cancelled",
+            ));
+        }
+        self.inner.read(buffer)
+    }
+}
+
+impl<R: Seek> Seek for CancelReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +227,17 @@ mod tests {
         })
     }
 
+    fn record(path: &Path) -> FileRecord {
+        let metadata = std::fs::metadata(path).unwrap();
+        FileRecord {
+            path: path.into(),
+            logical_bytes: metadata.len(),
+            created: metadata.created().ok(),
+            modified: metadata.modified().ok(),
+            read_only: false,
+        }
+    }
+
     #[test]
     fn groups_a_resized_copy_and_reports_undecodable_files() -> io::Result<()> {
         let folder = tempfile::tempdir()?;
@@ -168,7 +255,8 @@ mod tests {
         std::fs::write(&broken, b"not an image")?;
 
         let paths = [original.clone(), broken, distinct, smaller.clone()];
-        let analysis = find_similar_images(&paths, &AtomicBool::new(false));
+        let files: Vec<_> = paths.iter().map(|path| record(path)).collect();
+        let analysis = find_similar_images(&files, &AtomicBool::new(false));
         assert_eq!(analysis.errors, 1);
         assert_eq!(analysis.groups.len(), 1);
         let members = &analysis.groups[0].members;
@@ -183,9 +271,62 @@ mod tests {
 
     #[test]
     fn cancellation_discards_groups() {
-        let paths = [PathBuf::from("missing.png")];
-        let analysis = find_similar_images(&paths, &AtomicBool::new(true));
+        let analysis = find_similar_images(&[], &AtomicBool::new(true));
         assert!(analysis.cancelled);
         assert!(analysis.groups.is_empty());
+    }
+    #[test]
+    fn rejects_changed_and_oversized_images_and_honors_read_cancellation() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("photo.png");
+        scene(false).save(&path).map_err(io::Error::other)?;
+        let indexed = record(&path);
+        std::fs::write(&path, b"replacement")?;
+        assert!(image_hash(&indexed, &AtomicBool::new(false)).is_err());
+        image::GrayImage::new(MAX_DIMENSION + 1, 1)
+            .save(&path)
+            .map_err(io::Error::other)?;
+        assert!(image_hash(&record(&path), &AtomicBool::new(false)).is_err());
+        let cancel = AtomicBool::new(true);
+        let mut input = CancelReader {
+            inner: io::Cursor::new(b"image"),
+            cancelled: &cancel,
+        };
+        assert_eq!(
+            input.read(&mut [0; 1]).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_image_symlinks_after_indexing() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("photo.png");
+        let target = root.path().join("target.png");
+        scene(false).save(&path).map_err(io::Error::other)?;
+        let indexed = record(&path);
+        std::fs::rename(&path, &target)?;
+        std::os::unix::fs::symlink(&target, &path)?;
+        let analysis = find_similar_images(&[indexed], &AtomicBool::new(false));
+        assert_eq!(analysis.errors, 1);
+        assert!(analysis.groups.is_empty());
+        Ok(())
+    }
+    #[test]
+    fn preview_is_bounded_and_refuses_a_changed_source() -> io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("large.png");
+        image::RgbImage::new(2000, 1500)
+            .save(&path)
+            .map_err(io::Error::other)?;
+        let indexed = record(&path);
+        let png = image_preview(&indexed, &AtomicBool::new(false))?;
+        let preview = image::load_from_memory(&png).map_err(io::Error::other)?;
+        assert!(preview.width() <= 320 && preview.height() <= 220);
+        std::fs::write(&path, b"changed")?;
+        assert!(image_preview(&indexed, &AtomicBool::new(false)).is_err());
+        Ok(())
     }
 }

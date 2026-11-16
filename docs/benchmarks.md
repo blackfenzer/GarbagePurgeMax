@@ -35,8 +35,8 @@ These ignored tests run the desktop app's own scan pipeline: traversal, SQLite i
 ```sh
 cargo test --locked --release -p storage-clinic --no-run
 # Use the "Executable unittests src/main.rs" path that cargo prints.
-TIMEFMT='Peak RSS: %M KiB' time <executable> --ignored --exact workspace::scan::tests::benchmark_mostly_unique_end_to_end --nocapture
-TIMEFMT='Peak RSS: %M KiB' time <executable> --ignored --exact workspace::scan::tests::benchmark_duplicate_heavy_end_to_end --nocapture
+TIMEFMT='Peak RSS: %M KiB' time <executable> --ignored --exact workspace::scan::job::tests::benchmark_mostly_unique_end_to_end --nocapture
+TIMEFMT='Peak RSS: %M KiB' time <executable> --ignored --exact workspace::scan::job::tests::benchmark_duplicate_heavy_end_to_end --nocapture
 ```
 
 Each input has 100,000 files in 1,000 folders. Files in a folder share one size, 4,096 bytes plus the folder number, so both inputs produce 1,000 same-size candidate buckets and about 460 MB of written data. In the mostly unique input, every file differs in its first 8 bytes. In the duplicate-heavy input, each folder holds two contents of 50 identical files, for 2,000 verified groups. The database and fixture live in a temporary directory.
@@ -68,3 +68,48 @@ Measured on Apple Silicon with macOS 27.2, APFS, and Rust 1.100.0. The first sca
 | Peak process RSS | 16,656 KiB | 16,864 KiB |
 
 These queries run off the UI thread. In the interactive smoke test on 120,023 files, the window stayed responsive during scanning, paging, and search, but frame times were not measured.
+
+
+## Integrated hardening pass · November 16, 2026
+
+Measured on the same Apple Silicon/macOS 27.2 development machine with Rust 1.100.0, in separate release-test processes. All three benchmark assertions passed. The first scan follows fixture creation and is **not** a cold filesystem-cache measurement. No privileged cache purge or device-level I/O tracing was performed.
+
+| Metric | Mostly unique, 100,000 files | Duplicate-heavy, 100,000 files |
+| --- | ---: | ---: |
+| Traversal + SQLite index, first | 0.70 s | 0.73 s |
+| Verification + commit, first | 3.45 s | 11.59 s |
+| Total, first | 4.15 s | 12.33 s |
+| Total, repeat | 3.87 s | 16.32 s |
+| Full-hash cache hits / misses | 0 / 0 | 0 / 0 |
+| First results page | 0.1 ms | 0.1 ms |
+| Last results page | 31.2 ms | 32.9 ms |
+| Path search, first / last page | 43.7 / 45.3 ms | 54.8 / 54.8 ms |
+| File-type totals | 14.2 ms | 22.2 ms |
+| Cancel during indexing | 35.0 ms | 52.9 ms |
+| Cancel during verification | 77.3 ms | 84.9 ms |
+| Peak process RSS | 17,536 KiB | 17,712 KiB |
+| Whole-process CPU, user / system | 1.86 / 16.39 s | 4.01 / 33.78 s |
+
+CPU and RSS include fixture creation, both scans, queries, cancellation checks, and fixture removal. They are not phase-specific CPU or disk-bandwidth measurements. Timing variation and the slower duplicate-heavy repeat remain a performance concern; these results do not establish a speedup over the earlier baseline. The integrated build adds directory observations, WAL durability, bounded review data, and cache bookkeeping. Their individual contributions to the difference have not been isolated.
+
+These small-file fixtures contain files below 64 KiB, so they deliberately bypass the cache. An initial implementation caching samples regressed the mostly-unique test to 4.38 s first / 4.52 s repeat with 100,000 cache hits. Restricting caching to large full hashes avoids that needless database traffic. A pre-WAL measurement after this change was 3.47 / 3.45 s; the table above is the final integrated measurement.
+
+### Large-file cache effectiveness
+
+Run the third ignored benchmark in its own process:
+
+```sh
+TIMEFMT='Peak RSS: %M KiB; CPU: %U user, %S system' time <executable> --ignored --exact workspace::scan::job::tests::benchmark_large_cached_duplicates --nocapture
+```
+
+Eight separately written 32 MiB files (256 MiB total) contain identical bytes. Both passes must find one verified duplicate group, and the repeat must reuse all eight full hashes while still byte-comparing the files.
+
+| Metric | First scan | Repeat scan |
+| --- | ---: | ---: |
+| Total | 0.167 s | 0.035 s |
+| Full-hash cache hits | 0 | 8 |
+| Full-hash cache misses | 8 | 0 |
+
+The repeat was about 4.8× faster on this warm synthetic input. Peak process RSS was 45,104 KiB, including the 32 MiB fixture-generation buffer; CPU time was 0.12 s user / 0.14 s system. This is not a general throughput guarantee for real disks or photo libraries.
+
+The release test build succeeded with a local Rust-toolchain warning: `rust-objcopy` could not load `libLLVM.dylib` while stripping symbols. The executables still built and all benchmark assertions ran. `/usr/bin/time -l` could not read `kern.clockrate` in the sandbox, so final resource measurements use Zsh's built-in `time` instead.

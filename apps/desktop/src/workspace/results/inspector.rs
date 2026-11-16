@@ -6,7 +6,7 @@ use gpui_kit::{
     Context, Div, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
     Styled as _, div, px,
 };
-use scan_engine::FileRecord;
+use scan_engine::{FileRecord, assess_risk};
 use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
@@ -36,6 +36,7 @@ pub(super) fn scanned_file(
 ) -> Div {
     let muted = cx.theme().muted_foreground;
     let name = file.path.file_name().unwrap_or(file.path.as_os_str());
+    let risk = assess_risk(&file.path, file.read_only);
     let extension = file
         .path
         .extension()
@@ -75,6 +76,9 @@ pub(super) fn scanned_file(
                 .child(format!("Created · {}", timestamp(file.created))),
         );
 
+    content = content
+        .child(div().text_sm().font_semibold().child(risk.tier.label()))
+        .child(div().text_sm().text_color(muted).child(risk.reason));
     if file.read_only {
         content = content.child(div().text_sm().child("Read-only attribute set"));
     }

@@ -3,4 +3,5 @@ SELECT files.path_key, display_path, files.logical_bytes, created_unix_seconds,
 FROM duplicate_members
 JOIN files USING (scan_id, path_key)
 WHERE duplicate_members.scan_id = :scan_id AND group_id = :group_id
-ORDER BY files.path_key;
+ORDER BY files.path_key
+LIMIT :limit;

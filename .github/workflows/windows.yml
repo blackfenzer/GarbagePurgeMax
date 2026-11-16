@@ -26,7 +26,16 @@ jobs:
         run: cmake --version
 
       - name: Install the MSVC Rust toolchain
-        run: rustup toolchain install $env:STORAGE_CLINIC_TOOLCHAIN --profile minimal --no-self-update
+        run: rustup toolchain install $env:STORAGE_CLINIC_TOOLCHAIN --profile minimal --component rustfmt --component clippy --no-self-update
+
+      - name: Check formatting
+        run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN cargo fmt --all -- --check
+
+      - name: Check Clippy
+        run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN cargo clippy --locked --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+      - name: Test the SQLite schema
+        run: python -B crates/scan-store/tests/test_schema.py
 
       - name: Run the workspace tests
         run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN cargo test --locked --workspace --target x86_64-pc-windows-msvc

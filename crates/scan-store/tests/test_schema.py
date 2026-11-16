@@ -14,7 +14,7 @@ class SchemaTests(unittest.TestCase):
         self.db.create_function("file_type", 1, lambda path: "Other", deterministic=True)
         schema = "\n".join(
             (SQL / migration).read_text(encoding="utf-8")
-            for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql")
+            for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql", "004_directories.sql", "005_hash_cache.sql")
         )
         self.db.executescript(f"PRAGMA foreign_keys = ON; BEGIN;\n{schema}\nCOMMIT;")
 
@@ -46,12 +46,12 @@ class SchemaTests(unittest.TestCase):
             query,
             {
                 "scan_id": scan, "search": search, "limit": limit, "offset": offset,
-                "file_type": "", "modified_before": None,
+                "file_type": "", "modified_before": None, "modified_before_nanos": None,
             },
         ).fetchall()
 
     def test_history_includes_cancelled_scans_and_excludes_in_progress_scans(self):
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (3,))
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (5,))
         completed, cancelled, _ = (self.add_scan() for _ in range(3))
         self.finish_scan(completed, "completed")
         self.finish_scan(cancelled, "cancelled")
@@ -107,6 +107,18 @@ class SchemaTests(unittest.TestCase):
         self.add_file(scan, b"b.jpg", "b.jpg", 10)
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.execute(insert, (scan, b"b.jpg", 1, 65))
+
+    def test_folder_and_cache_constraints_and_cascade(self):
+        scan = self.add_scan()
+        self.db.execute("INSERT INTO directories VALUES (?, ?, 'empty', 1)", (scan, b"empty"))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO directories VALUES (?, ?, 'invalid', 2)", (scan, b"invalid"))
+        self.db.execute("INSERT INTO hash_cache VALUES (?, 'sha256', ?, ?, ?)", (b"path", b"v1", bytes(32), scan))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO hash_cache VALUES (?, 'sha256', ?, ?, ?)", (b"bad", b"v1", bytes(31), scan))
+        self.db.execute("DELETE FROM scans WHERE id = ?", (scan,))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM directories").fetchone(), (0,))
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM hash_cache").fetchone(), (0,))
 
 
 if __name__ == "__main__":

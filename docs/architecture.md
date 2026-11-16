@@ -9,7 +9,8 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/main.rs` | Initializes logging, GPUI Kit and the native window. Quits when the window closes. | In source |
 | `apps/desktop/src/workspace.rs` | Owns navigation and the active file selection. | In source |
 | `apps/desktop/src/workspace/overview.rs` | Renders scan controls and progress. | In source |
-| `apps/desktop/src/workspace/scan.rs` | Connects native folder selection and the background scan job to workspace state. | In source |
+| `apps/desktop/src/workspace/scan.rs` | Connects native folder selection and background scheduling to workspace state. | In source |
+| `apps/desktop/src/workspace/scan/job.rs` | Runs the blocking scan/index/analysis pipeline and its integrated fixture tests and benchmarks. | In source |
 | `apps/desktop/src/workspace/results.rs` | Renders saved file pages, the fallback preview, and example records. | In source |
 | `apps/desktop/src/workspace/results/file_table.rs` | Maps virtualized rows to stable indexes in the current page or preview. | In source |
 | `apps/desktop/src/workspace/results/saved.rs` | Loads persisted files and debounces search while the user types. | In source |
@@ -20,9 +21,13 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/workspace/results/export.rs` | Writes a saved scan to CSV through a temporary file and defuses cells a spreadsheet would run as formulas. | In source |
 | `apps/desktop/src/workspace/results/inspector.rs` | Presents metadata and finding evidence for the selected row. | In source |
 | `crates/scan-engine/src/lib.rs` | Owns traversal, exclusions, file metadata and error reporting. | In source |
-| `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates. Its platform code revalidates file identity before and after reads. | In source |
+| `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates and optionally reuses revalidated full hashes. | In source |
+| `crates/scan-engine/src/file_version.rs` | Shares native identity and metadata checks between duplicate analysis, image analysis, and previews. | In source |
+| `crates/scan-engine/src/hash_cache.rs` | Defines the small caller-owned cache interface, with no database dependency. | In source |
+| `crates/scan-engine/src/risk.rs` | Classifies conservative location risks; every tier stays review-only. | In source |
+| `crates/scan-store/src/hash_cache.rs` | Implements transactional cache reads, writes, and usage accounting. | In source |
 | `crates/scan-engine/src/cleanup_candidates.rs` | Matches indexed file metadata against review-only cleanup rules and explains each match. | In source |
-| `crates/scan-engine/src/similar_images.rs` | Decodes supported images read-only on every core, computes 64-bit difference hashes, and groups images within 6 bits of a reference image. | In source |
+| `crates/scan-engine/src/similar_images.rs` | Decodes supported images read-only with at most two workers, computes 64-bit difference hashes, and groups images within 6 bits of a reference image. | In source |
 | `crates/scan-engine/src/file_types.rs` | Names a broad file type from the path extension, with an Other fallback. | In source |
 | `crates/scan-engine/tests` | Exercises deterministic fixture trees in temporary directories. | In source |
 | `crates/scan-store` | Owns the SQLite migration, transactional writer, and queries for scan history and file search. | In source |
@@ -42,7 +47,7 @@ The desktop depends on engine types. The engine has no GPUI dependency. Features
 
 ## Scanner integration
 
-The engine streams regular-file metadata through a synchronous callback using `walkdir`. It accepts exact root-relative exclusions, skips symlinks and Windows reparse points, and checks cancellation between entries. Permission and metadata errors increment a counter. The scan retains the first error for display. Metadata describes each path at the time it was observed, and a directory tree can change as a scan runs.
+The engine streams file and directory observations through `scan_entries`, a synchronous callback using `walkdir`. The `scan_directory` adapter keeps the file-only API for existing callers. Each directory is checked directly for any entry, including hidden, excluded, and link entries. An unreadable listing is unknown, never empty. Folder observations live separately from files and do not contribute logical bytes. It accepts exact root-relative exclusions, skips symlinks and Windows reparse points, and checks cancellation between entries. Permission and metadata errors increment a counter. The scan retains the first error for display. Metadata describes each path at the time it was observed, and a directory tree can change as a scan runs.
 
 The desktop runs one scan on the GPUI background executor. It samples a single shared progress snapshot at 100 ms intervals and receives completion through a one-slot channel. It streams file metadata to SQLite and retains at most 200 records while selecting the 100 largest in case saving fails. The large-file threshold is 1 GiB. Exclusions are saved atomically in the app data directory and apply to future scans. The background scan reads a snapshot before walking the tree.
 
@@ -52,14 +57,27 @@ The analyzer reads one equal-size candidate set at a time from SQLite. It sample
 
 The schema stores scan summaries and file records in separate tables. Each record has a native path key and a display path. Preserve Unix path bytes or Windows UTF-16 code units in the key so distinct filenames survive lossy display conversion. Store file timestamps as seconds and nanoseconds, including timestamps before the Unix epoch.
 
-The writer enables foreign keys on every connection and records each scan in one transaction. Completing or cancelling a scan commits its summary and available rows. Dropping an incomplete transaction rolls back its rows. History queries hide running scans. File search checks the entire saved scan for a literal path substring and folds ASCII case. File pages have a stable size order with the native key as a tiebreaker. Desktop queries run in the background with bundled SQLite through `rusqlite`.
+The writer enables foreign keys and WAL mode on every connection and records each scan in one transaction. WAL lets readers inspect completed history while a large scan spills uncommitted pages. There is still only one writer; a second scan waits briefly and then reports contention. Completing or cancelling a scan commits its summary and available rows. Dropping an incomplete transaction rolls back its rows. History queries hide running scans. File search checks the entire saved scan for a literal path substring and folds ASCII case. File pages have a stable size order with the native key as a tiebreaker. Desktop queries run in the background with bundled SQLite through `rusqlite`.
 
 File-type totals are computed from the saved file rows when a scan opens. They take about 15 ms for 100,000 files, so no type column is stored.
 
-After exact duplicates are verified, the scan decodes JPEG, PNG, GIF, WebP, BMP, and TIFF files, hashes them, and saves similar-image groups in the same scan transaction. Each image joins the closest earlier reference within 6 bits or starts a new group, so every saved distance is measured to the reference. The v3 migration stores these groups in their own tables, apart from byte-verified duplicates. Byte-identical images appear in both views, labelled as an exact duplicate in one and a distance-0 similar image in the other. Decode failures are counted on the scan. Previews are loaded by GPUI's image element off the UI thread. See [image similarity](image-similarity.md) for how the hash and threshold were chosen.
+After exact duplicates are verified, the scan decodes JPEG, PNG, GIF, WebP, BMP, and TIFF files with at most two workers, hashes them, and saves similar-image groups in the same scan transaction. Each image joins the closest earlier reference within 6 bits or starts a new group, so every saved distance is measured to the reference. The v3 migration stores these groups in their own tables, apart from byte-verified duplicates. Byte-identical images appear in both views, labelled as an exact duplicate in one and a distance-0 similar image in the other. Decode failures are counted on the scan. Image analysis and previews share non-following opens, indexed-metadata checks, and native identity checks before and after decoding. Encoded input is limited to 64 MiB, dimensions to 16,384 pixels per side, and the decoder receives a 64 MiB allocation budget. The allocation budget is best-effort for codec internals, not a process RSS guarantee. Reads and grouping check cancellation. Review loads at most 200 members and generates 320×220 PNG thumbnails in the background; GPUI receives thumbnail bytes rather than live paths. A changed, missing, linked, oversized, or undecodable source produces a visible preview error. Switching groups cancels the previous preview request. See [image similarity](image-similarity.md) for how the hash and threshold were chosen.
 
 Each store connection registers the engine's `file_type` as a SQLite function, so file pages filter by the same type names the scan summary shows. Sorting appends one of five constant `ORDER BY` clauses by result-column position, so the default largest-first order keeps using the size index. Type and age filters and other sorts read the whole saved index for each page.
 
-Cleanup candidates are not stored. The store applies the engine's rules to a saved scan's file rows when the Review tab opens, measuring age from the scan's start time. Each file gets the first matching rule: empty file, known temporary name, incomplete download, installer, archive, then a file in a `Downloads` folder unmodified for 90 days. Changing a rule therefore needs no migration, and older scans gain the new candidates.
+Cleanup candidates are not stored. The store applies the engine's rules to a saved scan's file rows when the Review tab opens, measuring age from the scan's start time. Counts cover the complete scan, while the desktop retains at most 200 candidates per rule. Each file gets the first matching rule: empty file, known temporary name, incomplete download, installer, archive, then a file in a `Downloads` folder unmodified for 90 days. Changing a rule therefore needs no migration, and older scans gain the new candidates.
 
 The v2 migration keeps existing scans and adds duplicate groups and membership. Older scans need a new scan to generate findings. Cancelling verification keeps groups completed before cancellation and marks verification incomplete.
+
+
+## Incremental hashing and folder observations
+
+Migration v4 adds directory observations and an index for confirmed empty folders. Cancelled scans retain only observed folders. Review pages empty folders in batches of 30; old scans require rescanning. CSV includes empty-folder rows with `entry_kind=directory` and blank logical size.
+
+Migration v5 adds a transactional full-hash cache and per-scan hit/miss counters. Every scan still traverses and indexes fresh metadata. Samples and files smaller than 64 KiB are read directly: measurements showed caching those was slower. Full SHA-256 hashes for larger candidate files are reused only when the algorithm, native path, volume/file identity, length, modification time, creation time, and native change time all agree. The final byte comparison is always performed. Cache errors are skipped-check errors, never matches. Entries unused for more than 20 scan IDs are pruned on commit; rollback discards new cache writes. Image hashes are recomputed.
+
+## Review-only risk and export
+
+Risk assessment combines indexed read-only attributes with conservative, case-insensitive path-component rules. Known system, application, and cloud-managed locations are protected; known personal and development locations are high risk; everything else has unknown risk. This is path evidence, not comprehensive OS/cloud-provider detection. No tier authorizes removal. Risk and its reason appear in Review, File Inspector, and CSV.
+
+Export streams SQLite rows and bounded folder pages into a uniquely created temporary file beside the destination. Flush and sync precede atomic replacement; failures remove the temporary file and preserve the previous destination. Exports refuse the selected tree and the app-data directory, including ordinary symlink-parent aliases, and defuse formula-like CSV cells. Native paths are retained internally; CSV paths are display text, so CSV is not a lossless native-path backup.

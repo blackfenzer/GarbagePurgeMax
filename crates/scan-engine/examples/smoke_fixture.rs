@@ -66,6 +66,8 @@ fn main() -> io::Result<()> {
         )?;
     }
 
+    fs::create_dir_all(root.join("empty-folders/leaf"))?;
+    fs::create_dir_all(root.join("Documents/empty-personal-folder"))?;
     write_images(&root.join("images"))?;
     write_cleanup_candidates(&root.join("cleanup"))?;
     write_unreadable_folder(&root.join("locked"))?;

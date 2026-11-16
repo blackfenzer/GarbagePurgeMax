@@ -359,14 +359,14 @@ fn lists_review_groups_and_keeps_similarity_evidence() -> Result<(), Box<dyn std
     );
     assert_eq!(store.duplicate_groups(scan.id, 1, 1)?, [group(1, 2, 10)]);
     assert_eq!(
-        paths(&store.duplicate_group_files(scan.id, 2)?),
+        paths(&store.duplicate_group_files(scan.id, 2, 10)?),
         paths(&files[2..4])
     );
     assert_eq!(
         store.similar_image_groups(scan.id, 10, 0)?,
         [group(1, 2, 40)]
     );
-    let members = store.similar_image_group_files(scan.id, 1)?;
+    let members = store.similar_image_group_files(scan.id, 1, 10)?;
     assert_eq!(members[0].0.path, files[4].path);
     assert_eq!(
         members[1].1,
@@ -496,4 +496,204 @@ fn summary(files: u64, cancelled: bool) -> ScanSummary {
         cancelled,
         first_error: None,
     }
+}
+
+#[test]
+fn upgrades_every_previous_schema_and_rolls_back_directory_and_cache_writes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use scan_engine::{DirectoryRecord, HashCache, HashStage};
+    let migrations = [
+        include_str!("../sql/001_initial.sql"),
+        include_str!("../sql/002_exact_duplicates.sql"),
+        include_str!("../sql/003_similar_images.sql"),
+        include_str!("../sql/004_directories.sql"),
+    ];
+    for version in 1..=migrations.len() {
+        let root = tempfile::tempdir()?;
+        let database = root.path().join("scan.sqlite3");
+        let connection = Connection::open(&database)?;
+        for migration in &migrations[..version] {
+            connection.execute_batch(migration)?;
+        }
+        drop(connection);
+        let mut store = ScanStore::open(&database)?;
+        let mut writer = store.begin_scan(root.path(), 100)?;
+        writer.insert_directory(&DirectoryRecord {
+            path: root.path().join("empty"),
+            empty: Some(true),
+        })?;
+        writer.insert_directory(&DirectoryRecord {
+            path: root.path().join("unknown"),
+            empty: None,
+        })?;
+        writer.store(Path::new("file"), b"version", HashStage::Full, &[42; 32])?;
+        assert_eq!(
+            writer.load(Path::new("file"), b"changed", HashStage::Full)?,
+            None
+        );
+        assert_eq!(
+            writer.load(Path::new("file"), b"version", HashStage::Full)?,
+            Some([42; 32])
+        );
+        drop(writer);
+        assert!(store.empty_directories(1, 10, 0)?.is_empty());
+        let connection = Connection::open(&database)?;
+        assert_eq!(
+            connection.query_row("SELECT COUNT(*) FROM hash_cache", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        assert_eq!(
+            connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?,
+            5
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn empty_folder_pages_survive_partial_scans_without_changing_file_totals()
+-> Result<(), Box<dyn std::error::Error>> {
+    use scan_engine::DirectoryRecord;
+    let root = tempfile::tempdir()?;
+    let database = root.path().join("scan.sqlite3");
+    let mut store = ScanStore::open(&database)?;
+    let mut writer = store.begin_scan(root.path(), 100)?;
+    for (name, empty) in [
+        ("a", Some(true)),
+        ("b", Some(true)),
+        ("unknown", None),
+        ("not-empty", Some(false)),
+    ] {
+        writer.insert_directory(&DirectoryRecord {
+            path: root.path().join(name),
+            empty,
+        })?;
+    }
+    let saved = writer.finish(
+        &ScanSummary {
+            cancelled: true,
+            progress: ScanProgress {
+                directories: 4,
+                ..ScanProgress::default()
+            },
+            ..ScanSummary::default()
+        },
+        0,
+    )?;
+    drop(store);
+    let store = ScanStore::open(&database)?;
+    assert_eq!(
+        store.empty_directories(saved.id, 1, 0)?[0].path,
+        root.path().join("a")
+    );
+    assert_eq!(
+        store.empty_directories(saved.id, 1, 1)?[0].path,
+        root.path().join("b")
+    );
+    assert!(store.empty_directories(saved.id, 1, 2)?.is_empty());
+    assert!(store.file_types(saved.id)?.is_empty());
+    assert_eq!(store.scans(10, 0)?[0].progress.files, 0);
+    Ok(())
+}
+
+#[test]
+fn age_filter_and_time_sort_preserve_nanoseconds_and_put_unknown_dates_last()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&root.path().join("scan.sqlite3"))?;
+    let mut writer = store.begin_scan(root.path(), 100)?;
+    for (name, modified) in [
+        ("early", Some(UNIX_EPOCH + Duration::from_nanos(1))),
+        ("late", Some(UNIX_EPOCH + Duration::from_nanos(3))),
+        ("unknown", None),
+    ] {
+        writer.insert_file(&FileRecord {
+            modified,
+            ..file(name, 1)
+        })?;
+    }
+    let scan = writer.finish(&summary(3, false), 0)?;
+    let names = |filter| -> Result<Vec<_>, rusqlite::Error> {
+        Ok(store
+            .filtered_files(scan.id, &filter, 10, 0)?
+            .into_iter()
+            .map(|file| file.path)
+            .collect())
+    };
+    assert_eq!(
+        names(FileFilter {
+            modified_before: Some(UNIX_EPOCH + Duration::from_nanos(2)),
+            ..FileFilter::default()
+        })?,
+        vec![PathBuf::from("early")]
+    );
+    assert_eq!(
+        names(FileFilter {
+            sort: FileSort::Oldest,
+            ..FileFilter::default()
+        })?,
+        vec![
+            PathBuf::from("early"),
+            PathBuf::from("late"),
+            PathBuf::from("unknown")
+        ]
+    );
+    assert_eq!(
+        names(FileFilter {
+            sort: FileSort::Newest,
+            ..FileFilter::default()
+        })?,
+        vec![
+            PathBuf::from("late"),
+            PathBuf::from("early"),
+            PathBuf::from("unknown")
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn history_and_pages_remain_readable_while_a_large_scan_is_writing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let database = root.path().join("scan.sqlite3");
+    let mut store = ScanStore::open(&database)?;
+    let mut first = store.begin_scan(root.path(), 1_000)?;
+    first.insert_file(&file("saved.txt", 10))?;
+    let saved = first.finish(&summary(1, false), 0)?;
+    let mut active = store.begin_scan(root.path(), 1_000)?;
+    for index in 0..10_000 {
+        active.insert_file(&file(&format!("{}/{index}.txt", "folder/".repeat(40)), 10))?;
+    }
+    let reader = ScanStore::open(&database)?;
+    assert_eq!(reader.scans(10, 0)?.len(), 1);
+    assert_eq!(reader.files(saved.id, "saved", 100, 0)?.len(), 1);
+    drop(active);
+    assert_eq!(reader.scans(10, 0)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn partial_scans_retain_analysis_error_counts() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let database = root.path().join("scan.sqlite3");
+    let mut store = ScanStore::open(&database)?;
+    let mut writer = store.begin_scan(root.path(), 100)?;
+    writer.record_duplicate_errors(2);
+    writer.record_image_errors(3);
+    writer.finish(
+        &ScanSummary {
+            cancelled: true,
+            first_error: Some("unreadable image".into()),
+            ..ScanSummary::default()
+        },
+        0,
+    )?;
+    drop(store);
+    let saved = ScanStore::open(&database)?.scans(1, 0)?.remove(0);
+    assert_eq!(saved.duplicate_error_count, 2);
+    assert_eq!(saved.image_error_count, 3);
+    assert!(!saved.duplicates_analyzed && !saved.similar_images_analyzed);
+    Ok(())
 }

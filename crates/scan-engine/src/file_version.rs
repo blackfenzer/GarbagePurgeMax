@@ -3,22 +3,55 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
-use super::FileRecord;
+use crate::FileRecord;
 use crate::is_link;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct FileVersion {
-    pub(super) identity: platform::Identity,
-    pub(super) len: u64,
+pub(crate) struct FileVersion {
+    pub(crate) identity: platform::Identity,
+    pub(crate) len: u64,
     modified: SystemTime,
     created: Option<SystemTime>,
     changed: platform::ChangeTime,
 }
 
 impl FileVersion {
+    pub(crate) fn cache_key(self) -> Vec<u8> {
+        let mut key = b"SCV1".to_vec();
+        #[cfg(unix)]
+        {
+            key.extend_from_slice(b"unix");
+            key.extend_from_slice(&self.identity.0.to_le_bytes());
+            key.extend_from_slice(&self.identity.1.to_le_bytes());
+            key.extend_from_slice(&self.changed.0.to_le_bytes());
+            key.extend_from_slice(&self.changed.1.to_le_bytes());
+        }
+        #[cfg(windows)]
+        {
+            key.extend_from_slice(b"win");
+            key.extend_from_slice(&self.identity.0.to_le_bytes());
+            key.extend_from_slice(&self.identity.1);
+            key.extend_from_slice(&self.changed.to_le_bytes());
+        }
+        key.extend_from_slice(&self.len.to_le_bytes());
+        for time in [Some(self.modified), self.created] {
+            key.push(u8::from(time.is_some()));
+            if let Some(time) = time {
+                let (before_epoch, duration) = match time.duration_since(SystemTime::UNIX_EPOCH) {
+                    Ok(duration) => (false, duration),
+                    Err(error) => (true, error.duration()),
+                };
+                key.push(u8::from(before_epoch));
+                key.extend_from_slice(&duration.as_secs().to_le_bytes());
+                key.extend_from_slice(&duration.subsec_nanos().to_le_bytes());
+            }
+        }
+        key
+    }
+
     /// Pin the final component without following links and confirm that it is
     /// the same file visible at the path before any content is read.
-    pub(super) fn open(path: &Path) -> io::Result<(File, Self)> {
+    pub(crate) fn open(path: &Path) -> io::Result<(File, Self)> {
         let before = fs::symlink_metadata(path)?;
         regular_file(&before)?;
         let file = platform::open(path)?;
@@ -28,7 +61,7 @@ impl FileVersion {
         Ok((file, version))
     }
 
-    pub(super) fn check_record(self, record: &FileRecord) -> io::Result<()> {
+    pub(crate) fn check_record(self, record: &FileRecord) -> io::Result<()> {
         unchanged(
             self.len == record.logical_bytes
                 && record
@@ -40,12 +73,12 @@ impl FileVersion {
         )
     }
 
-    pub(super) fn check(&self, path: &Path, file: &File) -> io::Result<()> {
+    pub(crate) fn check(&self, path: &Path, file: &File) -> io::Result<()> {
         unchanged(*self == Self::from_file(file)?)?;
         self.check_path(path)
     }
 
-    pub(super) fn check_path(&self, path: &Path) -> io::Result<()> {
+    pub(crate) fn check_path(&self, path: &Path) -> io::Result<()> {
         unchanged(*self == platform::at_path(path)?)
     }
 
@@ -97,10 +130,10 @@ mod platform {
 
     use super::*;
 
-    pub(super) type Identity = (u64, u64);
-    pub(super) type ChangeTime = (i64, i64);
+    pub(crate) type Identity = (u64, u64);
+    pub(crate) type ChangeTime = (i64, i64);
 
-    pub(super) fn open(path: &Path) -> io::Result<File> {
+    pub(crate) fn open(path: &Path) -> io::Result<File> {
         // Nonblocking also prevents hanging if a FIFO replaces the file
         // between symlink_metadata and open.
         OpenOptions::new()
@@ -109,18 +142,18 @@ mod platform {
             .open(path)
     }
 
-    pub(super) fn file_identity(
+    pub(crate) fn file_identity(
         _: &File,
         metadata: &Metadata,
     ) -> io::Result<(Identity, ChangeTime)> {
         Ok((identity(metadata), change_time(metadata)))
     }
 
-    pub(super) fn check_before(metadata: &Metadata, version: &FileVersion) -> io::Result<()> {
+    pub(crate) fn check_before(metadata: &Metadata, version: &FileVersion) -> io::Result<()> {
         unchanged(*version == from_metadata(metadata)?)
     }
 
-    pub(super) fn at_path(path: &Path) -> io::Result<FileVersion> {
+    pub(crate) fn at_path(path: &Path) -> io::Result<FileVersion> {
         let metadata = fs::symlink_metadata(path)?;
         regular_file(&metadata)?;
         from_metadata(&metadata)
@@ -152,17 +185,17 @@ mod platform {
 
     use super::*;
 
-    pub(super) type Identity = (u64, [u8; 16]);
-    pub(super) type ChangeTime = i64;
+    pub(crate) type Identity = (u64, [u8; 16]);
+    pub(crate) type ChangeTime = i64;
 
-    pub(super) fn open(path: &Path) -> io::Result<File> {
+    pub(crate) fn open(path: &Path) -> io::Result<File> {
         OpenOptions::new()
             .read(true)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
     }
 
-    pub(super) fn file_identity(file: &File, _: &Metadata) -> io::Result<(Identity, ChangeTime)> {
+    pub(crate) fn file_identity(file: &File, _: &Metadata) -> io::Result<(Identity, ChangeTime)> {
         // Each class is paired with the corresponding Win32 structure.
         let identity = unsafe { information::<FILE_ID_INFO>(file, FileIdInfo) }?;
         let basic = unsafe { information::<FILE_BASIC_INFO>(file, FileBasicInfo) }?;
@@ -172,7 +205,7 @@ mod platform {
         ))
     }
 
-    pub(super) fn check_before(metadata: &Metadata, version: &FileVersion) -> io::Result<()> {
+    pub(crate) fn check_before(metadata: &Metadata, version: &FileVersion) -> io::Result<()> {
         unchanged(
             version.len == metadata.len()
                 && version.modified == metadata.modified()?
@@ -180,7 +213,7 @@ mod platform {
         )
     }
 
-    pub(super) fn at_path(path: &Path) -> io::Result<FileVersion> {
+    pub(crate) fn at_path(path: &Path) -> io::Result<FileVersion> {
         FileVersion::from_file(&open(path)?)
     }
 

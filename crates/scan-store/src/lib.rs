@@ -1,4 +1,5 @@
 mod encoding;
+mod hash_cache;
 
 use std::collections::HashMap;
 use std::io;
@@ -11,17 +12,19 @@ use rusqlite::{
     types::Type,
 };
 use scan_engine::{
-    CleanupCandidate, FileRecord, ScanProgress, ScanSummary, SimilarImage, cleanup_candidate,
-    file_type,
+    CleanupCandidate, DirectoryRecord, FileRecord, ScanProgress, ScanSummary, SimilarImage,
+    cleanup_candidate, file_type,
 };
 
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
 /// Applied in order. `user_version` counts how many have run.
-const MIGRATIONS: [&str; 3] = [
+const MIGRATIONS: [&str; 5] = [
     include_str!("../sql/001_initial.sql"),
     include_str!("../sql/002_exact_duplicates.sql"),
     include_str!("../sql/003_similar_images.sql"),
+    include_str!("../sql/004_directories.sql"),
+    include_str!("../sql/005_hash_cache.sql"),
 ];
 const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 const LIST_SCANS: &str = include_str!("../sql/list_scans.sql");
@@ -113,11 +116,18 @@ pub struct SavedScan {
     pub similar_images_analyzed: bool,
     pub similar_group_count: u64,
     pub image_error_count: u64,
+    pub hash_cache_hits: u64,
+    pub hash_cache_misses: u64,
 }
 
 pub struct ScanStore(Connection);
 
 impl ScanStore {
+    /// The app-owned database location, used to keep exports away from persistent state.
+    pub fn database_path(&self) -> Option<&Path> {
+        self.0.path().map(Path::new)
+    }
+
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let mut connection = Connection::open(path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
@@ -145,6 +155,8 @@ impl ScanStore {
         } else if version != SCHEMA_VERSION {
             return Err(incompatible_schema(version));
         }
+        // A large scan can spill pages before committing; WAL keeps saved history readable.
+        connection.pragma_update(None, "journal_mode", "WAL")?;
         Ok(Self(connection))
     }
 
@@ -192,6 +204,8 @@ impl ScanStore {
             similar_images_analyzed: false,
             similar_group_count: 0,
             image_error_count: 0,
+            hash_cache_hits: 0,
+            hash_cache_misses: 0,
         };
         Ok(ScanWriter { transaction, scan })
     }
@@ -223,9 +237,30 @@ impl ScanStore {
                         similar_images_analyzed: row.get(16)?,
                         similar_group_count: unsigned_integer(row, 17)?,
                         image_error_count: unsigned_integer(row, 18)?,
+                        hash_cache_hits: unsigned_integer(row, 19)?,
+                        hash_cache_misses: unsigned_integer(row, 20)?,
                     })
                 },
             )?
+            .collect()
+    }
+
+    pub fn empty_directories(
+        &self,
+        scan_id: i64,
+        limit: u32,
+        offset: u64,
+    ) -> rusqlite::Result<Vec<DirectoryRecord>> {
+        let mut statement = self.0.prepare_cached(
+            "SELECT path_key FROM directories WHERE scan_id = ?1 AND empty = 1 ORDER BY path_key LIMIT ?2 OFFSET ?3"
+        )?;
+        statement
+            .query_map(params![scan_id, limit, sqlite_integer(offset)?], |row| {
+                Ok(DirectoryRecord {
+                    path: decode_path(row, 0)?,
+                    empty: Some(true),
+                })
+            })?
             .collect()
     }
 
@@ -272,18 +307,14 @@ impl ScanStore {
         } else {
             LIST_FILES
         };
-        let modified_before = filter
-            .modified_before
-            .map(|time| time_parts(Some(time)).map(|(seconds, _)| seconds))
-            .transpose()?
-            .flatten();
+        let (modified_before, modified_before_nanos) = time_parts(filter.modified_before)?;
         // Result-column positions (3 = size, 6 = modified, 2 = display path, 1 = native key)
         // keep each order index-friendly in both queries. Every string here is a constant.
         let order = match filter.sort {
             FileSort::Largest => "3 DESC, 1",
             FileSort::Smallest => "3, 1",
-            FileSort::Newest => "6 DESC, 3 DESC, 1",
-            FileSort::Oldest => "6, 3 DESC, 1",
+            FileSort::Newest => "6 DESC, 7 DESC, 3 DESC, 1",
+            FileSort::Oldest => "modified_unix_seconds IS NULL, 6, 7, 3 DESC, 1",
             FileSort::Name => "2 COLLATE NOCASE, 3 DESC, 1",
         };
         let query = format!("{query}ORDER BY {order}\nLIMIT :limit OFFSET :offset");
@@ -295,6 +326,7 @@ impl ScanStore {
                     ":search": filter.search,
                     ":file_type": filter.file_type.unwrap_or(""),
                     ":modified_before": modified_before,
+                    ":modified_before_nanos": modified_before_nanos,
                     ":limit": limit,
                     ":offset": sqlite_integer(offset)?
                 },
@@ -345,11 +377,12 @@ impl ScanStore {
         &self,
         scan_id: i64,
         group_id: u64,
+        limit: u32,
     ) -> rusqlite::Result<Vec<FileRecord>> {
         let mut statement = self.0.prepare_cached(LIST_DUPLICATE_GROUP_FILES)?;
         statement
             .query_map(
-                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?},
+                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?, ":limit": limit},
                 file_record,
             )?
             .collect()
@@ -370,11 +403,12 @@ impl ScanStore {
         &self,
         scan_id: i64,
         group_id: u64,
+        limit: u32,
     ) -> rusqlite::Result<Vec<(FileRecord, SimilarImageEvidence)>> {
         let mut statement = self.0.prepare_cached(LIST_SIMILAR_IMAGE_GROUP_FILES)?;
         statement
             .query_map(
-                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?},
+                named_params! {":scan_id": scan_id, ":group_id": sqlite_integer(group_id)?, ":limit": limit},
                 |row| {
                     let hash: i64 = row.get(8)?;
                     Ok((
@@ -416,37 +450,72 @@ impl ScanStore {
             .collect()
     }
 
-    /// Every indexed file with its group memberships, largest first.
-    pub fn exported_files(&self, scan_id: i64) -> rusqlite::Result<Vec<ExportedFile>> {
-        let mut statement = self.0.prepare(EXPORT_FILES)?;
-        statement
-            .query_map(named_params! {":scan_id": scan_id}, |row| {
-                let similar_group: Option<i64> = row.get(9)?;
+    /// Streams every indexed file and its evidence in stable size order.
+    pub fn visit_exported_files(
+        &self,
+        scan_id: i64,
+        mut visit: impl FnMut(ExportedFile) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        let mut statement = self.0.prepare(EXPORT_FILES).map_err(io::Error::other)?;
+        let mut rows = statement
+            .query(named_params! {":scan_id": scan_id})
+            .map_err(io::Error::other)?;
+        let mut count = 0;
+        while let Some(row) = rows.next().map_err(io::Error::other)? {
+            let record = (|| -> rusqlite::Result<ExportedFile> {
                 Ok(ExportedFile {
                     file: file_record(row)?,
                     duplicate_group: optional_unsigned(row, 8)?,
-                    similar_image: match similar_group {
-                        Some(_) => Some((unsigned_integer(row, 9)?, row.get(10)?)),
-                        None => None,
-                    },
+                    similar_image: optional_unsigned(row, 9)?
+                        .map(|group| row.get(10).map(|distance| (group, distance)))
+                        .transpose()?,
                 })
-            })?
-            .collect()
+            })()
+            .map_err(io::Error::other)?;
+            visit(record)?;
+            count += 1;
+        }
+        Ok(count)
     }
 
-    /// Files matching a cleanup rule, largest first. Rules run on the saved metadata, so
-    /// older scans gain candidates when the rules change.
-    // ponytail: classifies every file row per call, like `file_types`; store the kind if slow.
+    pub fn exported_files(&self, scan_id: i64) -> io::Result<Vec<ExportedFile>> {
+        let mut files = Vec::new();
+        self.visit_exported_files(scan_id, |file| {
+            files.push(file);
+            Ok(())
+        })?;
+        Ok(files)
+    }
+
+    /// Streams metadata candidates largest first; callers may retain a bounded preview.
+    pub fn visit_cleanup_candidates(
+        &self,
+        scan_id: i64,
+        scanned_at: SystemTime,
+        mut visit: impl FnMut(FileRecord, CleanupCandidate),
+    ) -> rusqlite::Result<()> {
+        let query = format!("{LIST_FILES}ORDER BY 3 DESC, 1");
+        let mut statement = self.0.prepare_cached(&query)?;
+        let mut rows = statement.query(named_params! {":scan_id": scan_id, ":search": "", ":file_type": "", ":modified_before": Option::<i64>::None, ":modified_before_nanos": Option::<u32>::None})?;
+        while let Some(row) = rows.next()? {
+            let file = file_record(row)?;
+            if let Some(candidate) = cleanup_candidate(&file, scanned_at) {
+                visit(file, candidate);
+            }
+        }
+        Ok(())
+    }
+
     pub fn cleanup_candidates(
         &self,
         scan_id: i64,
         scanned_at: SystemTime,
     ) -> rusqlite::Result<Vec<(FileRecord, CleanupCandidate)>> {
-        Ok(self
-            .filtered_files(scan_id, &FileFilter::default(), u32::MAX, 0)?
-            .into_iter()
-            .filter_map(|file| cleanup_candidate(&file, scanned_at).map(|found| (file, found)))
-            .collect())
+        let mut candidates = Vec::new();
+        self.visit_cleanup_candidates(scan_id, scanned_at, |file, candidate| {
+            candidates.push((file, candidate))
+        })?;
+        Ok(candidates)
     }
 
     /// Totals indexed files by type, largest first. Cancelled scans cover the indexed part.
@@ -484,6 +553,13 @@ pub struct ScanWriter<'a> {
 }
 
 impl ScanWriter<'_> {
+    pub fn insert_directory(&mut self, directory: &DirectoryRecord) -> rusqlite::Result<()> {
+        self.transaction.prepare_cached(
+            "INSERT INTO directories (scan_id, path_key, display_path, empty) VALUES (?1, ?2, ?3, ?4)"
+        )?.execute(params![self.scan.id, encode_path(&directory.path), directory.path.to_string_lossy(), directory.empty])?;
+        Ok(())
+    }
+
     pub fn insert_file(&mut self, file: &FileRecord) -> rusqlite::Result<()> {
         let (created_seconds, created_nanos) = time_parts(file.created)?;
         let (modified_seconds, modified_nanos) = time_parts(file.modified)?;
@@ -551,6 +627,14 @@ impl ScanWriter<'_> {
         savepoint.commit()?;
         self.scan.duplicate_group_count = group_id;
         Ok(())
+    }
+
+    pub fn record_duplicate_errors(&mut self, error_count: u64) {
+        self.scan.duplicate_error_count = error_count;
+    }
+
+    pub fn record_image_errors(&mut self, error_count: u64) {
+        self.scan.image_error_count = error_count;
     }
 
     pub fn mark_duplicates_analyzed(&mut self, error_count: u64) -> rusqlite::Result<()> {
@@ -626,7 +710,7 @@ impl ScanWriter<'_> {
                               logical_bytes = ?5, large_files = ?6, skipped = ?7, errors = ?8,
                               first_error = ?9, duplicates_analyzed = ?10,
                               duplicate_group_count = ?11, similar_images_analyzed = ?12,
-                              similar_group_count = ?13
+                              similar_group_count = ?13, duplicate_error_count = ?15, image_error_count = ?16
              WHERE id = ?14",
             params![
                 unix_millis(SystemTime::now())?,
@@ -643,7 +727,14 @@ impl ScanWriter<'_> {
                 self.scan.similar_images_analyzed,
                 sqlite_integer(self.scan.similar_group_count)?,
                 self.scan.id,
+                sqlite_integer(self.scan.duplicate_error_count)?,
+                sqlite_integer(self.scan.image_error_count)?,
             ],
+        )?;
+        // Bound stale cache history without deleting scan evidence. Active versions are refreshed on hits.
+        self.transaction.execute(
+            "DELETE FROM hash_cache WHERE last_scan_id < ?1",
+            [self.scan.id.saturating_sub(20)],
         )?;
         self.transaction.commit()?;
         self.scan.progress = progress;

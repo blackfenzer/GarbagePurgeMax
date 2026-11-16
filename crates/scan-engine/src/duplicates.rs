@@ -8,11 +8,13 @@ use sha2::{Digest, Sha256};
 
 use crate::FileRecord;
 
-mod file_version;
-use file_version::FileVersion;
+use crate::file_version::FileVersion;
+use crate::hash_cache::{HashCache, HashStage, NoHashCache};
 
 const SAMPLE_BYTES: usize = 8 * 1024;
 const BUFFER_BYTES: usize = 64 * 1024;
+// SQLite cache traffic costs more than hashing small files or the 16 KiB sample.
+const MIN_CACHED_FILE_BYTES: u64 = 64 * 1024;
 type Fingerprint = [u8; 32];
 
 #[derive(Debug, Default)]
@@ -21,6 +23,8 @@ pub struct DuplicateAnalysis {
     pub errors: u64,
     pub first_error: Option<String>,
     pub cancelled: bool,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,8 +38,19 @@ pub struct DuplicateGroup {
 /// Verifies indexed files with equal sizes. If sizes are mixed, each size is
 /// analyzed independently. Cancellation discards the groups from this call.
 pub fn verify_duplicate_group(files: &[FileRecord], cancelled: &AtomicBool) -> DuplicateAnalysis {
+    verify_duplicate_group_cached(files, cancelled, &mut NoHashCache)
+}
+
+/// Reuses only hashes with a matching native file version. Every resulting match is
+/// still compared byte for byte; the cache never stores or grants verified status.
+pub fn verify_duplicate_group_cached(
+    files: &[FileRecord],
+    cancelled: &AtomicBool,
+    cache: &mut dyn HashCache,
+) -> DuplicateAnalysis {
     let mut verifier = Verifier {
         cancelled,
+        cache,
         analysis: DuplicateAnalysis::default(),
     };
     verifier.verify(files);
@@ -48,6 +63,7 @@ pub fn verify_duplicate_group(files: &[FileRecord], cancelled: &AtomicBool) -> D
 
 struct Verifier<'a> {
     cancelled: &'a AtomicBool,
+    cache: &'a mut dyn HashCache,
     analysis: DuplicateAnalysis,
 }
 
@@ -82,11 +98,7 @@ impl Verifier<'_> {
                 if identities.contains(&version.identity) {
                     continue;
                 }
-                let partial =
-                    hash_sample(&mut file, version.len, self.cancelled).and_then(|hash| {
-                        version.check(&record.path, &file)?;
-                        Ok(hash)
-                    });
+                let partial = self.hash(&record.path, &mut file, version, HashStage::Sample);
                 if let Some(hash) = self.observe(&record.path, partial) {
                     identities.insert(version.identity);
                     by_sample
@@ -103,9 +115,12 @@ impl Verifier<'_> {
                         return;
                     }
                     let full = candidate.open().and_then(|mut file| {
-                        let hash = hash_full(&mut file, candidate.version.len, self.cancelled)?;
-                        candidate.version.check(candidate.path(), &file)?;
-                        Ok(hash)
+                        self.hash(
+                            candidate.path(),
+                            &mut file,
+                            candidate.version,
+                            HashStage::Full,
+                        )
                     });
                     if let Some(hash) = self.observe(candidate.path(), full) {
                         by_hash.entry(hash).or_default().push_back(candidate);
@@ -173,6 +188,35 @@ impl Verifier<'_> {
                 }
             }
         }
+    }
+
+    fn hash(
+        &mut self,
+        path: &Path,
+        file: &mut File,
+        version: FileVersion,
+        stage: HashStage,
+    ) -> io::Result<Fingerprint> {
+        check_cancelled(self.cancelled)?;
+        let key = (stage == HashStage::Full && version.len >= MIN_CACHED_FILE_BYTES)
+            .then(|| version.cache_key());
+        if let Some(key) = &key {
+            if let Some(hash) = self.cache.load(path, key, stage)? {
+                version.check(path, file)?;
+                self.analysis.cache_hits += 1;
+                return Ok(hash);
+            }
+            self.analysis.cache_misses += 1;
+        }
+        let hash = match stage {
+            HashStage::Sample => hash_sample(file, version.len, self.cancelled)?,
+            HashStage::Full => hash_full(file, version.len, self.cancelled)?,
+        };
+        version.check(path, file)?;
+        if let Some(key) = key {
+            self.cache.store(path, &key, stage, &hash)?;
+        }
+        Ok(hash)
     }
 
     fn is_cancelled(&self) -> bool {
@@ -363,6 +407,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let mut verifier = Verifier {
             cancelled: &cancelled,
+            cache: &mut NoHashCache,
             analysis: DuplicateAnalysis::default(),
         };
         verifier.verify_hash_bucket([0; 32], candidates);
@@ -371,6 +416,53 @@ mod tests {
         assert_eq!(
             verifier.analysis.groups[0].paths,
             [records[1].path.clone(), records[2].path.clone()]
+        );
+        Ok(())
+    }
+    #[test]
+    fn a_cached_hash_never_substitutes_for_byte_comparison() -> io::Result<()> {
+        struct CollidingCache;
+        impl HashCache for CollidingCache {
+            fn load(
+                &mut self,
+                _: &Path,
+                _: &[u8],
+                _: HashStage,
+            ) -> io::Result<Option<Fingerprint>> {
+                Ok(Some([0; 32]))
+            }
+            fn store(
+                &mut self,
+                _: &Path,
+                _: &[u8],
+                _: HashStage,
+                _: &Fingerprint,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let mut files = Vec::new();
+        for (name, middle) in [("a", b'a'), ("b", b'b'), ("c", b'b')] {
+            let mut bytes = vec![0; 128 * 1024];
+            bytes[64 * 1024] = middle;
+            let path = root.path().join(name);
+            fs::write(&path, bytes)?;
+            files.push(FileRecord {
+                path,
+                logical_bytes: 128 * 1024,
+                created: None,
+                modified: None,
+                read_only: false,
+            });
+        }
+        let analysis =
+            verify_duplicate_group_cached(&files, &AtomicBool::new(false), &mut CollidingCache);
+        assert_eq!(analysis.cache_hits, 3);
+        assert_eq!(analysis.groups.len(), 1);
+        assert_eq!(
+            analysis.groups[0].paths,
+            [root.path().join("b"), root.path().join("c")]
         );
         Ok(())
     }

@@ -308,15 +308,11 @@ impl Results {
             .is_none_or(|saved| !saved.loading && saved.error.is_none());
         let duplicate_summary = self.saved.as_ref().map(|saved| {
             let scan = &saved.scan;
-            if scan.duplicates_analyzed {
-                let mut text = format!("{} duplicate groups", scan.duplicate_group_count);
-                if scan.duplicate_error_count > 0 {
-                    text.push_str(&format!(
-                        " · {} files skipped during verification",
-                        scan.duplicate_error_count
-                    ));
-                }
-                text
+            let mut text = if scan.duplicates_analyzed {
+                format!(
+                    "{} duplicate groups · {} cached hashes reused · {} cache misses",
+                    scan.duplicate_group_count, scan.hash_cache_hits, scan.hash_cache_misses
+                )
             } else if scan.cancelled {
                 format!(
                     "Duplicate check incomplete · {} verified groups",
@@ -324,7 +320,14 @@ impl Results {
                 )
             } else {
                 "Run a new scan to check for duplicates".into()
+            };
+            if scan.duplicate_error_count > 0 {
+                text.push_str(&format!(
+                    " · {} files skipped during verification",
+                    scan.duplicate_error_count
+                ));
             }
+            text
         });
         let file_type_summary = self.saved.as_ref().map(|saved| match &saved.file_types {
             None => "Loading file types…".to_string(),

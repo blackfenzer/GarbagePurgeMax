@@ -146,3 +146,95 @@ fn continues_after_an_unreadable_subdirectory() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn observes_empty_folders_without_treating_excluded_children_as_empty() -> io::Result<()> {
+    use scan_engine::{ScanEntry, scan_entries};
+    let root = tempfile::tempdir()?;
+    fs::create_dir_all(root.path().join("parent/empty"))?;
+    fs::create_dir(root.path().join("hidden-only"))?;
+    fs::write(root.path().join("hidden-only/.hidden"), b"")?;
+    fs::create_dir(root.path().join("excluded-only"))?;
+    fs::write(root.path().join("excluded-only/secret"), b"secret")?;
+    fs::create_dir(root.path().join("skip"))?;
+    let mut directories = Vec::new();
+    let summary = scan_entries(
+        root.path(),
+        &["excluded-only/secret".into(), "skip".into()],
+        &AtomicBool::new(false),
+        |_, entry| {
+            if let Some(ScanEntry::Directory(directory)) = entry {
+                directories.push(directory);
+            }
+        },
+    )?;
+    let empty: Vec<_> = directories
+        .iter()
+        .filter(|directory| directory.empty == Some(true))
+        .map(|directory| directory.path.clone())
+        .collect();
+    assert_eq!(empty, [root.path().join("parent/empty")]);
+    assert_eq!(summary.progress.files, 1);
+    assert_eq!(summary.progress.directories, directories.len() as u64);
+    assert_eq!(summary.progress.skipped, 2);
+    assert!(
+        !directories
+            .iter()
+            .any(|directory| directory.path.ends_with("skip"))
+    );
+    assert_eq!(
+        fs::read(root.path().join("excluded-only/secret"))?,
+        b"secret"
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_directory_scan_does_not_infer_unvisited_empty_folders() -> io::Result<()> {
+    use scan_engine::{ScanEntry, scan_entries};
+    let root = tempfile::tempdir()?;
+    fs::create_dir(root.path().join("unvisited"))?;
+    let cancel = AtomicBool::new(false);
+    let mut directories = Vec::new();
+    let summary = scan_entries(root.path(), &[], &cancel, |_, entry| {
+        if let Some(ScanEntry::Directory(directory)) = entry {
+            directories.push(directory);
+            cancel.store(true, Ordering::Relaxed);
+        }
+    })?;
+    assert!(summary.cancelled);
+    assert_eq!(directories.len(), 1);
+    assert_eq!(directories[0].empty, Some(false));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_or_link_only_folders_are_never_reported_empty() -> io::Result<()> {
+    use scan_engine::{ScanEntry, scan_entries};
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let root = tempfile::tempdir()?;
+    fs::create_dir(root.path().join("blocked"))?;
+    fs::write(root.path().join("blocked/secret"), b"keep")?;
+    fs::create_dir(root.path().join("links"))?;
+    symlink("missing-target", root.path().join("links/broken"))?;
+    fs::set_permissions(
+        root.path().join("blocked"),
+        fs::Permissions::from_mode(0o000),
+    )?;
+    let mut empty = Vec::new();
+    let result = scan_entries(root.path(), &[], &AtomicBool::new(false), |_, entry| {
+        if let Some(ScanEntry::Directory(directory)) = entry
+            && directory.empty == Some(true)
+        {
+            empty.push(directory.path);
+        }
+    });
+    fs::set_permissions(
+        root.path().join("blocked"),
+        fs::Permissions::from_mode(0o700),
+    )?;
+    result?;
+    assert!(empty.is_empty());
+    Ok(())
+}

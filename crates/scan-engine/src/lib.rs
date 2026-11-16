@@ -9,23 +9,43 @@ use walkdir::WalkDir;
 mod cleanup_candidates;
 mod duplicates;
 mod file_types;
+mod file_version;
+mod hash_cache;
+mod risk;
 mod similar_images;
 
 pub use cleanup_candidates::{CleanupCandidate, CleanupKind, OLD_DOWNLOAD_DAYS, cleanup_candidate};
-pub use duplicates::{DuplicateAnalysis, DuplicateGroup, verify_duplicate_group};
+pub use duplicates::{
+    DuplicateAnalysis, DuplicateGroup, verify_duplicate_group, verify_duplicate_group_cached,
+};
 pub use file_types::{FILE_TYPES, OTHER_FILE_TYPE, file_type};
+pub use hash_cache::{HashCache, HashStage};
+pub use risk::{RiskAssessment, RiskTier, assess_risk};
 pub use similar_images::{
     SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis, SimilarImageGroup, difference_hash,
-    find_similar_images, is_hashable_image,
+    find_similar_images, image_preview, is_hashable_image,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FileRecord {
     pub path: PathBuf,
     pub logical_bytes: u64,
     pub created: Option<SystemTime>,
     pub modified: Option<SystemTime>,
     pub read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectoryRecord {
+    pub path: PathBuf,
+    /// None means the directory could not be read. Excluded entries still count as contents.
+    pub empty: Option<bool>,
+}
+
+#[derive(Debug)]
+pub enum ScanEntry {
+    File(FileRecord),
+    Directory(DirectoryRecord),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -52,6 +72,25 @@ pub fn scan_directory(
     exclusions: &[PathBuf],
     cancelled: &AtomicBool,
     mut visit: impl FnMut(ScanProgress, Option<FileRecord>),
+) -> io::Result<ScanSummary> {
+    scan_entries(root, exclusions, cancelled, |progress, entry| {
+        visit(
+            progress,
+            match entry {
+                Some(ScanEntry::File(file)) => Some(file),
+                _ => None,
+            },
+        );
+    })
+}
+
+/// Streams files and directories. An empty folder is observed directly, never inferred
+/// from a filtered or partial traversal. Like file metadata, this is a point-in-time observation.
+pub fn scan_entries(
+    root: &Path,
+    exclusions: &[PathBuf],
+    cancelled: &AtomicBool,
+    mut visit: impl FnMut(ScanProgress, Option<ScanEntry>),
 ) -> io::Result<ScanSummary> {
     let mut summary = ScanSummary::default();
     if cancelled.load(Ordering::Relaxed) {
@@ -125,7 +164,20 @@ pub fn scan_directory(
             visit(summary.progress, None);
         } else if directory {
             summary.progress.directories += 1;
-            visit(summary.progress, None);
+            let empty = fs::read_dir(path)
+                .ok()
+                .and_then(|mut entries| match entries.next() {
+                    None => Some(true),
+                    Some(Ok(_)) => Some(false),
+                    Some(Err(_)) => None,
+                });
+            visit(
+                summary.progress,
+                Some(ScanEntry::Directory(DirectoryRecord {
+                    path: path.to_path_buf(),
+                    empty,
+                })),
+            );
         } else if metadata.is_file() {
             let record = FileRecord {
                 path: entry.into_path(),
@@ -139,7 +191,7 @@ pub fn scan_directory(
                 .progress
                 .logical_bytes
                 .saturating_add(record.logical_bytes);
-            visit(summary.progress, Some(record));
+            visit(summary.progress, Some(ScanEntry::File(record)));
         } else {
             summary.progress.skipped += 1;
             visit(summary.progress, None);

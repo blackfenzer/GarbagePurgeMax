@@ -4,6 +4,12 @@
 
 ### Added
 
+- Observed empty-folder records, a paged Review tab, and explicit directory rows in CSV.
+- Protected, high, and unknown risk labels with reasons in Review, Inspector, and CSV; every tier remains review-only.
+- Incremental full SHA-256 caching for duplicate candidates of at least 64 KiB, validated against native file identity and metadata. Matches still undergo byte comparison.
+- Cache hit/miss counters, database migrations v4/v5, upgrade and rollback tests, and a large-file cache benchmark.
+- macOS CI and expanded Windows formatting, Clippy, and schema checks.
+
 - Native GPUI Kit desktop workspace with Overview, Scan Results, and File Inspector.
 - Read-only folder scans with progress, cancellation, and filesystem error counts.
 - File metadata and an explanation for files of at least 1 GiB.
@@ -25,12 +31,22 @@
 
 ### Fixed
 
+- Large scans no longer block saved-history readers: the local index uses SQLite WAL.
+- Image analysis and previews reject changed files and links, enforce decode limits, and honor cancellation. Review uses bounded thumbnails and reports preview failures.
+- CSV export streams rows, uses unique temporary files, preserves unrelated `.part` files, and refuses the scan tree and app-data directory.
+- Time filtering and sorting preserve nanoseconds; unknown modification times sort last.
+- Cancelled scans retain analysis error counts. Review group buttons support keyboard focus.
+- Background scan work and integrated tests now live separately from GPUI scheduling.
+
 - Closing the window quits the app instead of leaving a windowless process running.
 - A scan started while another app window is saving now explains why it could not be saved.
 - Development builds verify duplicates at near-release speed.
 - Scan History uses a sidebar icon included in the app’s default assets.
 
 ### Verified
+
+- Current Apple Silicon pass: 57 Rust tests, 6 schema tests, formatting, strict Clippy, and desktop build.
+- Three separately executed release benchmarks, including eight revalidated full-hash cache hits on a 256 MiB fixture. Current small-file timings and the earlier baseline are recorded separately in `docs/benchmarks.md`.
 
 - Apple Silicon build and workspace tests.
 - macOS app launch and scanning through the native folder picker.
@@ -42,5 +58,5 @@
 ### Needs testing
 
 - The Windows 11 desktop smoke test and mounted-volume selection.
-- The Review page's three tabs, the Scan Results filters, Scan again, and Export CSV in the running app.
+- The Review page's four tabs, the Scan Results filters, Scan again, and Export CSV in the running app.
 - The similar-image threshold on real photos.

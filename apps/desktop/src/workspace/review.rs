@@ -1,4 +1,8 @@
 use std::io;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::base::StyledExt as _;
@@ -6,12 +10,13 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, button::Button,
 };
 use gpui_kit::{
-    AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Task, div,
-    img, px,
+    AppContext as _, Context, Div, Image, ImageFormat, InteractiveElement as _, IntoElement,
+    ObjectFit, ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Task, div, img, px,
 };
 use scan_engine::{
-    CleanupCandidate, CleanupKind, FileRecord, SIMILAR_IMAGE_DISTANCE, is_hashable_image,
+    CleanupCandidate, CleanupKind, DirectoryRecord, FileRecord, SIMILAR_IMAGE_DISTANCE,
+    assess_risk, image_preview, is_hashable_image,
 };
 use scan_store::{DuplicateEvidence, ReviewGroup, SavedScan, SimilarImageEvidence};
 
@@ -27,12 +32,36 @@ pub(super) enum ReviewKind {
     ExactDuplicates,
     SimilarImages,
     CleanupCandidates,
+    EmptyFolders,
 }
 
-type GroupsAndCandidates = (Vec<ReviewGroup>, Vec<Vec<Member>>);
+type GroupsAndCandidates = (Vec<ReviewGroup>, Vec<Vec<Member>>, Vec<DirectoryRecord>);
 
 /// A group member and the saved evidence for its match.
-type Member = (FileRecord, Option<Evidence>);
+struct Member {
+    file: FileRecord,
+    evidence: Option<Evidence>,
+    preview: Option<Arc<Image>>,
+    preview_error: Option<String>,
+}
+
+impl Member {
+    fn new(file: FileRecord, evidence: Option<Evidence>) -> Self {
+        Self {
+            file,
+            evidence,
+            preview: None,
+            preview_error: None,
+        }
+    }
+}
+
+struct PreviewRequest(Arc<AtomicBool>);
+impl Drop for PreviewRequest {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 enum Evidence {
     Exact(DuplicateEvidence),
@@ -52,9 +81,11 @@ pub(super) struct Review {
     members: Vec<Member>,
     /// Cleanup candidates by `CleanupKind::ALL` position. Group ids are positions plus one.
     candidate_groups: Vec<Vec<Member>>,
+    empty_folders: Vec<DirectoryRecord>,
     loading: bool,
     error: Option<String>,
     request: Option<Task<()>>,
+    preview_request: Option<PreviewRequest>,
 }
 
 impl Review {
@@ -75,9 +106,13 @@ impl Review {
 
     fn load_groups(&mut self, offset: u64, cx: &mut Context<Workspace>) {
         self.request.take();
+        self.preview_request.take();
         self.groups.clear();
         self.members.clear();
         self.candidate_groups.clear();
+        self.empty_folders.clear();
+        self.offset = offset;
+        self.has_next = false;
         self.selected_group = None;
         self.error = None;
         let Some(scan) = &self.scan else {
@@ -100,9 +135,12 @@ impl Review {
                 let review = &mut workspace.review;
                 review.loading = false;
                 match result {
-                    Ok((mut groups, candidate_groups)) => {
+                    Ok((mut groups, candidate_groups, mut folders)) => {
                         review.candidate_groups = candidate_groups;
-                        review.has_next = groups.len() > PAGE_SIZE as usize;
+                        review.has_next =
+                            groups.len() > PAGE_SIZE as usize || folders.len() > PAGE_SIZE as usize;
+                        folders.truncate(PAGE_SIZE as usize);
+                        review.empty_folders = folders;
                         groups.truncate(PAGE_SIZE as usize);
                         review.offset = offset;
                         let first = groups.first().map(|group| group.group_id);
@@ -123,26 +161,36 @@ impl Review {
         let Some(scan_id) = self.scan.as_ref().map(|scan| scan.id) else {
             return;
         };
-        if self.kind == ReviewKind::CleanupCandidates {
+        self.error = None;
+        if matches!(
+            self.kind,
+            ReviewKind::CleanupCandidates | ReviewKind::EmptyFolders
+        ) {
             // Candidates arrive with their groups, so selection needs no query.
             self.selected_group = Some(group_id);
             cx.notify();
             return;
         }
         self.request.take();
+        self.preview_request.take();
         self.selected_group = Some(group_id);
         self.members.clear();
         self.loading = true;
         let kind = self.kind;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.preview_request = Some(PreviewRequest(Arc::clone(&cancel)));
         self.request = Some(cx.spawn(async move |workspace, cx| {
             let result = cx
                 .background_spawn(async move {
-                    load_members(kind, scan_id, group_id).map_err(io::Error::other)
+                    load_members(kind, scan_id, group_id, &cancel).map_err(io::Error::other)
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {
                 let review = &mut workspace.review;
-                if review.selected_group != Some(group_id) {
+                if review.selected_group != Some(group_id)
+                    || review.kind != kind
+                    || review.scan.as_ref().map(|scan| scan.id) != Some(scan_id)
+                {
                     return;
                 }
                 review.loading = false;
@@ -174,14 +222,15 @@ impl Review {
         let (analyzed, explanation) = match self.kind {
             ReviewKind::ExactDuplicates => (
                 scan.duplicates_analyzed || scan.duplicate_group_count > 0,
-                "Every file in a group has byte-identical contents, verified with SHA-256 and a full comparison.".to_string(),
+                "Files in each group had byte-identical contents when scanned, verified with SHA-256 and a full comparison. Previews are loaded from the current files.".to_string(),
             ),
             ReviewKind::SimilarImages => (
-                scan.similar_images_analyzed,
+                scan.similar_images_analyzed || scan.similar_group_count > 0,
                 format!(
                     "Images whose difference hash is within {SIMILAR_IMAGE_DISTANCE} of 64 bits of the group's reference image. This is a heuristic match, not a verified copy. Compare the images before acting.",
                 ),
             ),
+            ReviewKind::EmptyFolders => (true, "Folders observed with no entries, including hidden entries, when scanned. Excluded or unreadable contents never count as empty. Older scans need rescanning. Nothing is removed.".to_string()),
             ReviewKind::CleanupCandidates => (
                 true,
                 "Files matching a cleanup rule, judged from the names, sizes, folders, and dates saved with the scan. Candidates are for review only. Nothing is moved or deleted.".to_string(),
@@ -219,6 +268,7 @@ impl Review {
         .child(
             div()
                 .flex()
+                .flex_wrap()
                 .gap_2()
                 .child(tab(
                     "exact-duplicates",
@@ -234,6 +284,11 @@ impl Review {
                     "cleanup-candidates",
                     "Cleanup candidates".into(),
                     ReviewKind::CleanupCandidates,
+                ))
+                .child(tab(
+                    "empty-folders",
+                    "Empty folders".into(),
+                    ReviewKind::EmptyFolders,
                 )),
         )
         .child(div().text_sm().text_color(muted).child(explanation))
@@ -255,19 +310,21 @@ impl Review {
         let rows = self.groups.iter().map(|group| {
             let group_id = group.group_id;
             let row = div()
-                .id(("review-group", group_id))
                 .flex()
                 .flex_col()
                 .p_2()
                 .rounded_md()
-                .cursor_pointer()
-                .hover(|row| row.bg(cx.theme().secondary))
-                .on_click(cx.listener(move |workspace, _, _, cx| {
-                    workspace.review.select_group(group_id, cx)
-                }))
-                .child(div().text_sm().child(self.group_title(group_id)))
+                .child(
+                    Button::new(("review-group", group_id))
+                        .small()
+                        .label(self.group_title(group_id))
+                        .selected(self.selected_group == Some(group_id))
+                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                            workspace.review.select_group(group_id, cx)
+                        })),
+                )
                 .child(div().text_xs().text_color(muted).child(format!(
-                    "{} files · {}",
+                    "{} items · {}",
                     group.file_count,
                     format_bytes(group.logical_bytes)
                 )));
@@ -321,6 +378,7 @@ impl Review {
 
     fn group_title(&self, group_id: u64) -> String {
         match self.kind {
+            ReviewKind::EmptyFolders => "Empty folders".into(),
             ReviewKind::CleanupCandidates => CleanupKind::ALL
                 .get(group_id as usize - 1)
                 .map_or("Candidates", |kind| kind.label())
@@ -332,6 +390,23 @@ impl Review {
     /// Group members side by side: preview, location, size, and the evidence for the match.
     fn group_detail(&self, cx: &Context<Workspace>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        if self.kind == ReviewKind::EmptyFolders {
+            return div()
+                .id("empty-folder-detail")
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_y_scroll()
+                .children(self.empty_folders.iter().map(|folder| {
+                    let risk = assess_risk(&folder.path, false);
+                    div()
+                        .p_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(div().text_sm().child(folder.path.display().to_string()))
+                        .child(div().text_xs().child(risk.tier.label()))
+                        .child(div().text_xs().text_color(muted).child(risk.reason))
+                }));
+        }
         let members: &[Member] = match (self.kind, self.selected_group) {
             (ReviewKind::CleanupCandidates, Some(group_id)) => self
                 .candidate_groups
@@ -339,12 +414,20 @@ impl Review {
                 .map_or(&[], Vec::as_slice),
             _ => &self.members,
         };
-        let hidden = members.len().saturating_sub(MAX_CARDS);
+        let total = self
+            .groups
+            .iter()
+            .find(|group| Some(group.group_id) == self.selected_group)
+            .map_or(members.len() as u64, |group| group.file_count);
+        let hidden = total.saturating_sub(MAX_CARDS as u64);
         let cards = members
             .iter()
             .take(MAX_CARDS)
             .enumerate()
-            .map(|(index, (file, evidence))| {
+            .map(|(index, member)| {
+                let file = &member.file;
+                let evidence = &member.evidence;
+                let risk = assess_risk(&file.path, file.read_only);
                 let name = file
                     .path
                     .file_name()
@@ -356,9 +439,9 @@ impl Review {
                     .parent()
                     .map(|parent| parent.display().to_string())
                     .unwrap_or_default();
-                // GPUI loads and decodes the preview off the UI thread.
-                let preview = if is_hashable_image(&file.path) {
-                    img(file.path.clone())
+                // GPUI receives a bounded thumbnail, never a live filesystem path.
+                let preview = if let Some(preview) = &member.preview {
+                    img(Arc::clone(preview))
                         .object_fit(ObjectFit::Contain)
                         .size_full()
                         .into_any_element()
@@ -366,7 +449,12 @@ impl Review {
                     div()
                         .text_xs()
                         .text_color(muted)
-                        .child("No preview")
+                        .child(
+                            member
+                                .preview_error
+                                .clone()
+                                .unwrap_or_else(|| "No preview".into()),
+                        )
                         .into_any_element()
                 };
                 let evidence = match evidence {
@@ -424,6 +512,8 @@ impl Review {
                             .text_xs()
                             .child(format!("{} logical size", format_bytes(file.logical_bytes))),
                     )
+                    .child(div().text_xs().font_semibold().child(risk.tier.label()))
+                    .child(div().text_xs().text_color(muted).child(risk.reason))
                     .children(evidence.into_iter().enumerate().map(|(line, text)| {
                         let row = div().text_xs();
                         if line == 0 {
@@ -441,8 +531,8 @@ impl Review {
             .overflow_y_scroll()
             .children((hidden > 0).then(|| {
                 div().mb_3().text_sm().text_color(muted).child(format!(
-                    "Showing the largest {MAX_CARDS} of {} files.",
-                    members.len()
+                    "Showing the first {MAX_CARDS} of {} files. Export CSV includes all indexed files.",
+                    total
                 ))
             }))
             .child(div().flex().flex_wrap().gap_3().children(cards))
@@ -460,32 +550,56 @@ fn load_groups(
         ReviewKind::ExactDuplicates => (
             store.duplicate_groups(scan_id, PAGE_SIZE + 1, offset)?,
             Vec::new(),
+            Vec::new(),
         ),
         ReviewKind::SimilarImages => (
             store.similar_image_groups(scan_id, PAGE_SIZE + 1, offset)?,
             Vec::new(),
+            Vec::new(),
         ),
+        ReviewKind::EmptyFolders => {
+            let folders = store.empty_directories(scan_id, PAGE_SIZE + 1, offset)?;
+            let groups = if folders.is_empty() {
+                Vec::new()
+            } else {
+                vec![ReviewGroup {
+                    group_id: 1,
+                    file_count: folders.len().min(PAGE_SIZE as usize) as u64,
+                    logical_bytes: 0,
+                }]
+            };
+            (groups, Vec::new(), folders)
+        }
         ReviewKind::CleanupCandidates => {
             let mut by_kind: Vec<Vec<Member>> =
                 CleanupKind::ALL.iter().map(|_| Vec::new()).collect();
-            for (file, candidate) in store.cleanup_candidates(scan_id, scanned_at)? {
+            let mut totals: Vec<ReviewGroup> = CleanupKind::ALL
+                .iter()
+                .enumerate()
+                .map(|(index, _)| ReviewGroup {
+                    group_id: index as u64 + 1,
+                    file_count: 0,
+                    logical_bytes: 0,
+                })
+                .collect();
+            store.visit_cleanup_candidates(scan_id, scanned_at, |file, candidate| {
                 let index = CleanupKind::ALL
                     .iter()
                     .position(|kind| *kind == candidate.kind)
                     .expect("every kind is listed");
-                by_kind[index].push((file, Some(Evidence::Cleanup(candidate))));
-            }
-            let groups = by_kind
-                .iter()
-                .enumerate()
-                .filter(|(_, members)| !members.is_empty())
-                .map(|(index, members)| ReviewGroup {
-                    group_id: index as u64 + 1,
-                    file_count: members.len() as u64,
-                    logical_bytes: members.iter().map(|(file, _)| file.logical_bytes).sum(),
-                })
+                totals[index].file_count += 1;
+                totals[index].logical_bytes = totals[index]
+                    .logical_bytes
+                    .saturating_add(file.logical_bytes);
+                if by_kind[index].len() < MAX_CARDS {
+                    by_kind[index].push(Member::new(file, Some(Evidence::Cleanup(candidate))));
+                }
+            })?;
+            let groups = totals
+                .into_iter()
+                .filter(|group| group.file_count > 0)
                 .collect();
-            (groups, by_kind)
+            (groups, by_kind, Vec::new())
         }
     })
 }
@@ -494,27 +608,42 @@ fn load_members(
     kind: ReviewKind,
     scan_id: i64,
     group_id: u64,
+    cancelled: &AtomicBool,
 ) -> Result<Vec<Member>, Box<dyn std::error::Error + Send + Sync>> {
     let store = storage::open()?;
-    Ok(match kind {
+    let mut members: Vec<Member> = match kind {
         ReviewKind::ExactDuplicates => {
-            let files = store.duplicate_group_files(scan_id, group_id)?;
+            let files = store.duplicate_group_files(scan_id, group_id, MAX_CARDS as u32)?;
             let mut evidence = store.duplicate_evidence(scan_id, &files)?;
             files
                 .into_iter()
                 .map(|file| {
                     let found = evidence.remove(&file.path).map(Evidence::Exact);
-                    (file, found)
+                    Member::new(file, found)
                 })
                 .collect()
         }
         ReviewKind::SimilarImages => store
-            .similar_image_group_files(scan_id, group_id)?
+            .similar_image_group_files(scan_id, group_id, MAX_CARDS as u32)?
             .into_iter()
-            .map(|(file, evidence)| (file, Some(Evidence::Similar(evidence))))
+            .map(|(file, evidence)| Member::new(file, Some(Evidence::Similar(evidence))))
             .collect(),
-        ReviewKind::CleanupCandidates => Vec::new(),
-    })
+        ReviewKind::CleanupCandidates | ReviewKind::EmptyFolders => Vec::new(),
+    };
+    for member in &mut members {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        if is_hashable_image(&member.file.path) {
+            match image_preview(&member.file, cancelled) {
+                Ok(png) => {
+                    member.preview = Some(Arc::new(Image::from_bytes(ImageFormat::Png, png)))
+                }
+                Err(error) => member.preview_error = Some(format!("Preview unavailable: {error}")),
+            }
+        }
+    }
+    Ok(members)
 }
 
 fn hex(bytes: &[u8]) -> String {
