@@ -3,7 +3,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
@@ -121,14 +121,13 @@ impl Review {
             return;
         };
         let scan_id = scan.id;
-        let scanned_at =
-            UNIX_EPOCH + Duration::from_millis(u64::try_from(scan.started_unix_ms).unwrap_or(0));
+        let scanned_at = scan.started_at();
         self.loading = true;
         let kind = self.kind;
         self.request = Some(cx.spawn(async move |workspace, cx| {
             let result = cx
                 .background_spawn(async move {
-                    load_groups(kind, scan_id, offset, scanned_at).map_err(io::Error::other)
+                    load_groups(kind, scan_id, offset, scanned_at?).map_err(io::Error::other)
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {

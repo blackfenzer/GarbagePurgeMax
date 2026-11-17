@@ -2,6 +2,17 @@
 
 This plan follows the [Storage Clinic product and engineering spec](https://docs.google.com/document/d/18SDjWNdy-TYGB-RnyspMEBs-md3MumCaWI_fc94-HQc/edit) and reflects the repository as of November 16, 2026. See [architecture](architecture.md) for implementation decisions and [progress](progress.md) for verification evidence.
 
+## Grouped implementation batches
+
+| Batch | Tasks that belong together | State and acceptance |
+| --- | --- | --- |
+| Dashboard and inspection | Latest saved findings, five recent scans, storage categories, Open/Review/Scan again actions, and Inspector cleanup evidence | Implemented together. Saved data loads off the UI thread at startup, when opening Overview, after a scan, and on Refresh. Partial/incomplete analysis stays visible. Inspector, Review, and CSV share the saved observation time. 67 Rust tests pass; interactive review remains pending. |
+| Performance and reliability | Isolate small-file timing variation, exercise larger candidate sets and error recovery, compare memory/cancellation on the same fixtures | First pass implemented: phase diagnostics, 20,000-candidate benchmark, corrupt-storage/disappearing-file/savepoint/finalization regression tests, and image-candidate release on storage failure. File verification dominates the measured workload; earlier timing variance remains unresolved. See benchmarks. |
+| Platform and release validation | Windows native build/runtime, macOS packaged launch, mounted volumes, accessibility, real-photo calibration, screenshots/demo, signing and updates | Requires native interactive checks and distribution decisions. User will perform manual checks later; unsigned packages are available. |
+| Reviewed cleanup and recovery | Queue, confirmation, revalidation, Trash/Recycle Bin actions, journals and restore | Separate future milestone. Remains outside the current read-only contract. |
+
+Named profiles, deeper archive previews, and customization remain conditional rather than expanding the current batches.
+
 ## v0.1 · Read-only foundation
 
 ### Current completion pass
@@ -75,7 +86,8 @@ Deferred beyond this read-only release. These are implementation tasks, not skip
 Current hardening includes bounded thumbnails and candidate previews, decoder limits, WAL readers, keyboard-focusable review buttons, safer export, and regression tests. Overview now shows OS-reported volume capacity and available space for the latest scan in this session. Full accessibility audits, app-specific cache policies, signed installers, updates, and publication remain open.
 
 - [x] Show volume capacity and space available to the caller in Overview after a scan, distinct from logical folder size. Query off the UI thread, label the snapshot, and preserve results on query failure. macOS native query and regression tests pass; Windows execution and visual review remain pending.
-- [ ] Complete dashboard and Inspector presentation for supported volume statistics, storage categories, findings, recent scans, and review and recovery outcomes.
+- [x] Complete the read-only dashboard and Inspector presentation: volume snapshot, latest saved findings, storage categories, recent scans, direct navigation, and metadata-based cleanup evidence. Automated data checks pass; visual and keyboard checks remain pending.
+- [ ] Add dashboard and Inspector review-action/recovery outcomes when the v0.3 mutation workflow exists.
 - [ ] Curate per-app cache policies with platform-specific fixtures and clear evidence for each classification.
 - [ ] Harden accessibility, keyboard navigation, throughput, memory limits, and error recovery on supported OS versions. Measure regressions against the same fixtures.
 - [x] Build unsigned development ZIPs for native macOS arm64 and Windows x64 hosts, with layout, architecture, and failure-preservation tests. The macOS archive is built; packaged launch and actual Windows packaging still need platform testing.

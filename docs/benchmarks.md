@@ -140,3 +140,44 @@ Separate duplicate-heavy 100,000-file runs on the same Mac passed their assertio
 | Whole-process CPU, user / system | 3.38 / 27.68 s | 4.01 / 34.99 s |
 
 Fixture creation also slowed, showing environmental variability beyond the changed hashing stage. These unpaired end-to-end timings do not establish a speedup or isolate the cause of the difference. The earlier small-file performance regression remains open; neither privileged cold-cache measurements nor device-level I/O tracing was performed.
+
+## Phase profiling and larger candidate sets · November 17, 2026
+
+The scan report now records setup, traversal/indexing, candidate-query, duplicate-verification, duplicate-write, image-analysis, commit, and volume-query wall times, plus the largest same-size candidate set. Release benchmarks print these fields. For an ordinary development run, use `RUST_LOG=storage_clinic=debug cargo run --locked -p storage-clinic`. Diagnostics contain durations/counts, not paths, and are not saved to SQLite. Verification includes native version checks, sample/full hashing, optional cache access, and byte comparison; these substeps are not individually timed. Small bookkeeping and cleanup costs are outside the named phase totals.
+
+Measured on Apple Silicon/macOS 27.2 using the existing 100,000-file fixtures in separate sequential release processes. No compiler or other benchmark was launched concurrently. First scans follow fixture creation; these are warm-cache observations, not cold-disk measurements.
+
+| Metric | Mostly unique | Duplicate-heavy |
+| --- | ---: | ---: |
+| Total, first / repeat | 3.61 / 3.62 s | 7.76 / 7.93 s |
+| Indexing, first / repeat | 0.687 / 0.676 s | 0.673 / 0.675 s |
+| Candidate queries, first / repeat | 0.061 / 0.062 s | 0.082 / 0.085 s |
+| Duplicate verification, first / repeat | 2.797 / 2.825 s | 6.508 / 6.668 s |
+| Duplicate writes, first / repeat | <0.001 / <0.001 s | 0.364 / 0.366 s |
+| Commit, first / repeat | 0.056 / 0.059 s | 0.124 / 0.132 s |
+| Largest same-size set | 100 files | 100 files |
+| Cancellation, indexing / verification | 44.9 / 73.8 ms | 45.0 / 87.3 ms |
+| Peak process RSS | 17,728 KiB | 16,848 KiB |
+| Whole-process CPU, user / system | 1.76 / 16.01 s | 2.71 / 23.40 s |
+
+Image and volume queries took less than 0.1 ms on these fixtures; there are no decodable image inputs. Page/search queries remained below 49 ms. CPU/RSS cover fixture generation, scans, query/cancellation checks, and removal; they are not phase-specific CPU or disk-I/O statistics.
+
+File verification accounts for about 84% of the duplicate-heavy scan. Candidate SQL queries are a small fraction on this workload, so this result does not justify a new index or migration. The previous 17.75 / 16.15 s result did not reproduce. Since only diagnostics and the unavailable-storage memory path changed, the difference is not evidence of a normal-path speedup or proof that the variability is resolved.
+
+### One large candidate set
+
+Run the new ignored test in its own release-test process, using the executable path printed by `cargo test --locked --release -p storage-clinic --no-run`:
+
+```sh
+TIMEFMT='Peak RSS: %M KiB; CPU: %U user, %S system' time <executable> --ignored --exact workspace::scan::job::tests::benchmark_large_candidate_set --nocapture
+```
+
+The fixture writes 20,000 separate files of 4 KiB in one directory. Half are byte-identical; the remainder have distinct leading bytes. All files enter one size bucket. Each of three scans must persist exactly one verified group of 10,000 distinct files and report zero duplicate errors.
+
+| Pass | Total | Candidate queries | File verification |
+| --- | ---: | ---: | ---: |
+| 1 | 1.054 s | 7.79 ms | 0.866 s |
+| 2 | 1.076 s | 7.88 ms | 0.861 s |
+| 3 | 1.037 s | 7.93 ms | 0.849 s |
+
+Peak process RSS was 26,800 KiB; whole-process CPU was 0.50 s user / 4.42 s system. This establishes behavior for the tested 20,000-member bucket, not a general memory ceiling: candidates and image records still scale with input size. Large photo libraries, adversarial hash collisions, cold-cache/device-I/O tracing, and GUI frame timing need separate measurements. The storage-failure cleanup of retained image records does not affect these successful-save measurements.

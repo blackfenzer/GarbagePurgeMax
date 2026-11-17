@@ -120,6 +120,24 @@ pub struct SavedScan {
     pub hash_cache_misses: u64,
 }
 
+impl SavedScan {
+    /// The saved observation time, shared by review, Inspector, and export rules.
+    pub fn started_at(&self) -> io::Result<SystemTime> {
+        let duration = Duration::from_millis(self.started_unix_ms.unsigned_abs());
+        let time = if self.started_unix_ms < 0 {
+            SystemTime::UNIX_EPOCH.checked_sub(duration)
+        } else {
+            SystemTime::UNIX_EPOCH.checked_add(duration)
+        };
+        time.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Scan time is outside the supported range",
+            )
+        })
+    }
+}
+
 pub struct ScanStore(Connection);
 
 impl ScanStore {

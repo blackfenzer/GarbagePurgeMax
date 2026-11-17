@@ -52,6 +52,21 @@ pub(super) struct ScanReport {
     pub large_file_count: u64,
     pub saved: Option<SavedScan>,
     pub save_error: Option<String>,
+    pub timings: ScanTimings,
+}
+
+/// Wall-clock diagnostics for one scan; never interpreted as disk throughput.
+#[derive(Debug, Default)]
+pub(super) struct ScanTimings {
+    pub setup: Duration,
+    pub indexing: Duration,
+    pub candidate_queries: Duration,
+    pub duplicate_verification: Duration,
+    pub duplicate_writes: Duration,
+    pub image_analysis: Duration,
+    pub commit: Duration,
+    pub volume_query: Duration,
+    pub largest_candidate_set: usize,
 }
 
 impl Workspace {
@@ -154,6 +169,7 @@ impl Workspace {
                             Ok(report) => {
                                 workspace.results.show_scan(&report, cx);
                                 workspace.scan.report = Some(report);
+                                workspace.overview.load(cx);
                                 workspace.page = Page::Results;
                             }
                             Err(error) => {

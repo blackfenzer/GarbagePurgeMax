@@ -6,7 +6,7 @@ use gpui_kit::{
     Context, Div, InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
     Styled as _, div, px,
 };
-use scan_engine::{FileRecord, assess_risk};
+use scan_engine::{FileRecord, assess_risk, cleanup_candidate, file_type};
 use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
@@ -32,6 +32,7 @@ pub(super) fn scanned_file(
     file: &FileRecord,
     threshold: u64,
     duplicate: Option<&DuplicateEvidence>,
+    scanned_at: Option<SystemTime>,
     cx: &Context<Workspace>,
 ) -> Div {
     let muted = cx.theme().muted_foreground;
@@ -62,6 +63,10 @@ pub(super) fn scanned_file(
                 .child(format!("{} logical size", format_bytes(file.logical_bytes))),
         )
         .child(div().text_sm().child(format!(
+            "Type · {} (extension-based)",
+            file_type(&file.path)
+        )))
+        .child(div().text_sm().child(format!(
             "Extension · {}",
             extension.as_deref().unwrap_or("None")
         )))
@@ -81,6 +86,26 @@ pub(super) fn scanned_file(
         .child(div().text_sm().text_color(muted).child(risk.reason));
     if file.read_only {
         content = content.child(div().text_sm().child("Read-only attribute set"));
+    }
+    if let Some(candidate) = scanned_at.and_then(|time| cleanup_candidate(file, time)) {
+        content = content
+            .child(
+                div()
+                    .text_sm()
+                    .font_semibold()
+                    .child(format!("Review candidate · {}", candidate.kind.label())),
+            )
+            .child(div().text_sm().text_color(muted).child(candidate.evidence))
+            .child(div().text_sm().text_color(muted).child(
+                "Metadata evidence only; this does not establish that the file is safe to remove.",
+            ));
+    } else if scanned_at.is_none() {
+        content = content.child(
+            div()
+                .text_sm()
+                .text_color(muted)
+                .child("Cleanup evidence unavailable without a saved scan time."),
+        );
     }
     if file.logical_bytes >= threshold {
         content = content

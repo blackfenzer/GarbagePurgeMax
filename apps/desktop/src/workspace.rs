@@ -28,6 +28,7 @@ pub(crate) struct Workspace {
     results: results::Results,
     scan: scan::ScanSession,
     history: history::History,
+    overview: overview::SavedOverview,
     review: review::Review,
 }
 
@@ -71,12 +72,15 @@ impl Render for Workspace {
 
 impl Workspace {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut overview = overview::SavedOverview::default();
+        overview.load(cx);
         Self {
             page: Page::default(),
             exclusions: exclusions::Exclusions::load(cx),
             results: results::Results::new(window, cx),
             scan: scan::ScanSession::default(),
             history: history::History::default(),
+            overview,
             review: review::Review::default(),
         }
     }
@@ -99,7 +103,8 @@ impl Workspace {
                         let scan = workspace.results.saved_scan().cloned();
                         workspace.review.open(scan, cx);
                     }
-                    Page::Overview | Page::Results => {}
+                    Page::Overview => workspace.overview.load(cx),
+                    Page::Results => {}
                 }
                 cx.notify();
             }))

@@ -9,6 +9,9 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
+mod saved;
+pub(super) use saved::SavedOverview;
+
 use super::{
     Page, Workspace,
     exclusions::path_label,
@@ -123,6 +126,7 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl Int
                 .filter(|_| scan.active.is_none())
                 .map(|report| volume_card(report, cx)),
         )
+        .child(saved::render(workspace, cx))
         .child(exclusions_card(workspace, cx))
 }
 

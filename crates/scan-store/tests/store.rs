@@ -10,6 +10,85 @@ use scan_store::{
 };
 
 #[test]
+fn failed_duplicate_group_rolls_back_members_and_reuses_its_id()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let database = fixture.path().join("scans.sqlite3");
+    let mut store = ScanStore::open(&database)?;
+    let mut writer = store.begin_scan(fixture.path(), 100)?;
+    let a = file("a.txt", 4);
+    let b = file("b.txt", 4);
+    writer.insert_file(&a)?;
+    writer.insert_file(&b)?;
+    assert!(
+        writer
+            .insert_duplicate_group(&[a.path.clone(), PathBuf::from("missing.txt")], &[1; 32])
+            .is_err()
+    );
+    writer.insert_duplicate_group(&[a.path.clone(), b.path.clone()], &[2; 32])?;
+    writer.mark_duplicates_analyzed(0)?;
+    let saved = writer.finish(&summary(2, false), 0)?;
+    drop(store);
+    let reopened = ScanStore::open(&database)?;
+    let groups = reopened.duplicate_groups(saved.id, 10, 0)?;
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].file_count, 2);
+    assert_eq!(reopened.duplicate_files(saved.id, "", 10, 0)?.len(), 2);
+    assert_eq!(saved.duplicate_group_count, 1);
+    Ok(())
+}
+
+#[test]
+fn failed_scan_commit_preserves_previous_history() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let database = fixture.path().join("scans.sqlite3");
+    let mut store = ScanStore::open(&database)?;
+    let previous = store
+        .begin_scan(fixture.path(), 100)?
+        .finish(&summary(0, false), 0)?;
+    let mut writer = store.begin_scan(fixture.path(), 100)?;
+    writer.insert_file(&file("uncommitted.txt", 4))?;
+    // Violates the persisted large_files <= files invariant at finalization.
+    assert!(writer.finish(&summary(0, false), 1).is_err());
+    drop(store);
+    let reopened = ScanStore::open(&database)?;
+    let history = reopened.scans(10, 0)?;
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, previous.id);
+    let connection = Connection::open(database)?;
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM files", [], |row| row.get::<_, i64>(0))?,
+        0
+    );
+    assert_eq!(
+        connection.query_row("SELECT COUNT(*) FROM scans", [], |row| row.get::<_, i64>(0))?,
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn saved_scan_time_preserves_milliseconds_on_both_sides_of_epoch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&fixture.path().join("scans.sqlite3"))?;
+    let mut scan = store
+        .begin_scan(fixture.path(), 100)?
+        .finish(&ScanSummary::default(), 0)?;
+    for millis in [-1001_i64, -1, 0, 1, 1001] {
+        scan.started_unix_ms = millis;
+        let duration = Duration::from_millis(millis.unsigned_abs());
+        let expected = if millis < 0 {
+            UNIX_EPOCH - duration
+        } else {
+            UNIX_EPOCH + duration
+        };
+        assert_eq!(scan.started_at()?, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn restores_partial_scan_metadata_and_paginates_literal_search()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

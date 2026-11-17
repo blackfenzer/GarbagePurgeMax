@@ -4,6 +4,9 @@
 
 ### Added
 
+- Per-scan phase diagnostics and a reproducible 20,000-file same-size candidate benchmark, with regression coverage for corrupt storage, disappearing files, failed duplicate-group writes, and failed scan finalization.
+- A saved Overview dashboard with the latest scan's findings and storage categories, up to five recent scans, and Open results, Review findings, and Scan again actions. Loads after restart and refreshes after scans without blocking GPUI.
+- File Inspector now shows extension-based type and review-only cleanup evidence using the same saved observation time as Review and CSV. Incomplete analysis and partial indices remain explicit on the dashboard.
 - Overview volume capacity and available-space snapshots, queried in the background with native paths. Unavailable statistics preserve completed scan results; cancelled scans skip the query. Values remain separate from logical folder sizes and reclaimable space.
 - Unsigned native development ZIP generation for macOS arm64 and Windows x64, with package layout, architecture, and failure-preservation tests in CI.
 - Observed empty-folder records, a paged Review tab, and explicit directory rows in CSV.
@@ -33,6 +36,8 @@
 
 ### Fixed
 
+- Scans stop retaining image candidates when database saving is unavailable, and release queued image records after an indexing write failure.
+- Shared saved-scan time conversion preserves milliseconds before the Unix epoch instead of silently clamping cleanup evidence to 1970.
 - Duplicate candidates at most 16 KiB reuse their complete sample hash, avoiding a redundant read while retaining final byte comparison and identity checks. Zero-use cache counters no longer issue SQL updates.
 - Large scans no longer block saved-history readers: the local index uses SQLite WAL.
 - Image analysis and previews reject changed files and links, enforce decode limits, and honor cancellation. Review uses bounded thumbnails and reports preview failures.
@@ -48,7 +53,8 @@
 
 ### Verified
 
-- Current Apple Silicon pass: 63 Rust tests, formatting, strict Clippy, debug/release builds, and macOS archive contents. The preceding pass also passed 6 schema and 6 packaging tests. Packaged launch and Windows execution remain untested.
+- Current Apple Silicon pass: 71 Rust tests, formatting, strict Clippy, debug/release builds, and macOS archive contents. Earlier passes also passed 6 schema and 6 packaging tests. Packaged launch and Windows execution remain untested.
+- November 17 phase profiling: 100,000-file scans took 3.61 / 3.62 s for mostly unique files and 7.76 / 7.93 s for duplicate-heavy files. A 20,000-file candidate set passed three scans at 1.04–1.08 s; earlier timing variation is not considered resolved.
 - A focused alternating-order benchmark confirms less work in small-file hashing; full-scan measurements remain variable and do not establish an end-to-end speedup.
 - Three separately executed release benchmarks, including eight revalidated full-hash cache hits on a 256 MiB fixture. Current small-file timings and the earlier baseline are recorded separately in `docs/benchmarks.md`.
 

@@ -1,5 +1,30 @@
 # Development progress
 
+## 2026-11-17 · Performance diagnostics and failure recovery
+
+Added wall-clock diagnostics for setup, indexing, candidate queries, duplicate verification/writes, image analysis, commit, and the volume query, plus the largest same-size candidate set. Release benchmarks print them; ordinary runs can enable `RUST_LOG=storage_clinic=debug`. Timings do not claim device throughput or phase-specific CPU measurements.
+
+The worker now stops accumulating image records if saving is unavailable and releases the queued records after an indexing write failure. Added synthetic regression tests for corrupted storage (preserve original bytes and retain a bounded preview), disappearing text/image files after indexing (preserve the full index and remaining valid groups), duplicate-group savepoint rollback, and failed scan finalization (preserve earlier history and discard uncommitted records).
+
+Automated checks on Apple Silicon/macOS 27.2: **71 Rust tests passed**, five benchmarks ignored by the default suite. Rustfmt, strict Clippy, and debug/release app builds pass. No SQL or package-script change was made, so those suites were not repeated. The rebuilt unsigned macOS ZIP passed integrity, launch-metadata, executable-permission, and current-binary equality checks, separately from launch. The existing local `rust-objcopy` missing-`libLLVM.dylib` stripping warning remains.
+
+Three separately executed release benchmark scenarios passed. Mostly unique 100,000-file scans took 3.61 / 3.62 s; duplicate-heavy scans took 7.76 / 7.93 s. File verification accounts for about 84% of the duplicate-heavy first scan, versus 82 ms for candidate queries. The new 20,000-file same-size candidate set found one 10,000-member duplicate group on all three passes (1.054 / 1.076 / 1.037 s, 26,800 KiB peak process RSS). See [phase measurements](benchmarks.md#phase-profiling-and-larger-candidate-sets--november-17-2026).
+
+Earlier full-scan slowdowns did not reproduce; no normal-path performance fix is claimed. Current measurements cover warm synthetic inputs, not cold caches, device I/O, large photo libraries, or UI frame times. The finalization test injects a constraint failure, not real disk exhaustion. GUI/Windows/mounted-volume checks remain deferred. Next performance work should focus on file verification substeps or representative photo workloads, rather than changing SQLite indexes without evidence.
+
+## 2026-11-16 · Grouped dashboard and inspection batch
+
+Grouped the remaining work in [the task plan](tasks.md#grouped-implementation-batches), then implemented the read-only dashboard and inspection batch together:
+
+- Overview loads the latest saved findings, extension-based storage categories, and up to five recent scans. Loading happens off GPUI at startup, on opening Overview, after a scan, and on Refresh. Loading/error/empty states are explicit; historical data is distinct from the session-only volume snapshot.
+- Each row offers Open results, Review findings, and Scan again. Review actions select the same scan in Results. Scan again respects the existing active-scan and exclusion-settings guards. History remains available through All scan history.
+- Summaries label cancelled indices as partial and distinguish unfinished duplicate/image analysis from finished checks with no groups. Counts of traversal issues and skipped analysis checks remain visible. Storage categories cover only the latest saved scan and represent logical bytes, including hard-linked names.
+- File Inspector shows type and existing metadata-based cleanup evidence beside risk and duplicate evidence. Inspector, Review, and CSV now share a checked saved-time conversion, preserving pre-epoch milliseconds rather than clamping them. Unsaved previews explicitly lack cleanup evidence.
+
+On Apple Silicon/macOS 27.2: **67 Rust tests passed**, four benchmark tests ignored by the normal suite; Rustfmt, strict Clippy, and the debug build passed. New tests cover empty history, reopening and bounding recent scans, category totals from the latest partial index, incomplete-analysis labels, history during an active write transaction, and saved timestamps on both sides of the epoch. Existing Review/export/scanner tests pass with the shared timestamp API.
+
+No SQL, migration, dependency, or packaging-script changes were needed; schema/package test suites were not repeated. The release build passed and the rebuilt ZIP passed integrity, launch-metadata, executable-permission, and current-binary equality checks. The existing local `rust-objcopy` missing-`libLLVM.dylib` stripping warning remains. Interactive UI, keyboard/accessibility, Windows, and mounted-volume checks remain deferred. End-to-end performance benchmarks were not repeated, and no responsiveness measurements are claimed. Next engineering batch: isolate performance variation and exercise larger candidate/error-recovery workloads; signing and mutation/recovery remain separate work.
+
 ## 2026-11-16 · Overview volume-space snapshot
 
 Implemented the next read-only dashboard task: Overview shows capacity and space available to the caller for the selected directory's volume after a scan. The engine owns native `statfs`/`statvfs` and `GetDiskFreeSpaceExW` adapters; GPUI only renders the worker's result. macOS uses 64-bit block counters to avoid the narrower Darwin `statvfs` representation. No dependency or schema change was needed.

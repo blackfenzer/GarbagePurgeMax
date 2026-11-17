@@ -264,6 +264,7 @@ impl Results {
                             file,
                             scan.large_file_threshold,
                             saved.evidence.get(&file.path),
+                            scan.started_at().ok(),
                             cx,
                         )
                     });
@@ -282,7 +283,7 @@ impl Results {
                 let scope = format!("{} of {} preview files · Largest first", matches, files,);
                 let detail = selected
                     .and_then(|index| report.largest_files.get(index))
-                    .map(|file| inspector::scanned_file(file, LARGE_FILE_BYTES, None, cx));
+                    .map(|file| inspector::scanned_file(file, LARGE_FILE_BYTES, None, None, cx));
                 (
                     description,
                     scope,

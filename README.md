@@ -34,6 +34,8 @@ Repeat scans reuse full duplicate hashes for files at least 64 KiB only after re
 
 The app saves file paths and metadata locally under `~/Library/Application Support/Storage Clinic` on macOS or `%LOCALAPPDATA%\Storage Clinic` on Windows. If saving fails, the results view keeps the 100 largest files in a temporary preview.
 
+Overview also opens your saved history after a restart: the latest scan's findings and storage categories, plus up to four earlier scans. Open results, review findings, or scan the same folder again directly from these rows. Refresh reloads the dashboard. Cancelled scans show partial totals, and unfinished analysis is labelled explicitly. File Inspector shows the selected file's extension-based type and cleanup-candidate evidence, evaluated at the saved scan time just like Review and CSV; these findings remain review-only.
+
 After a scan, Overview shows the containing volume's OS-reported capacity and available space. This is a snapshot from the latest scan in this session, separate from folder logical size; it may reflect quotas and shared storage. It is not a reclaimable-space estimate or a live reading. Unavailable statistics leave scan results intact, and cancelled scans skip the query. Volume snapshots are not saved in history or CSV.
 
 ## Unsigned development package
@@ -60,10 +62,10 @@ To generate the synthetic tree used for the desktop smoke test, run `cargo run -
 
 | Platform | Build and tests | Desktop smoke test |
 | --- | --- | --- |
-| macOS 27.2, Apple Silicon | Current pass: rustfmt, strict Clippy, 63 Rust tests, debug/release builds; earlier schema and packaging checks passed | Earlier baseline passed; current UI changes and packaged launch need an unlocked interactive session |
+| macOS 27.2, Apple Silicon | Current pass: rustfmt, strict Clippy, 71 Rust tests, debug/release builds; earlier schema and packaging checks passed | Earlier baseline passed; current UI changes and packaged launch need an unlocked interactive session |
 | Windows x64 | Earlier baseline passed on `windows-2022`; current changes await CI | Needs testing on Windows 11 |
 
-The current 100,000-file release measurements took 4.15 s for mostly unique files and 12.33 s for duplicate-heavy files on the first pass, with about 17.3 MiB peak process RSS. Repeats took 3.87 s and 16.32 s respectively; the slower duplicate-heavy repeat remains a performance concern. Review queries stayed below 55 ms and cancellation returned within 85 ms in these runs. A separate 256 MiB duplicate fixture improved from 0.167 s to 0.035 s using revalidated full hashes. See [benchmarks](docs/benchmarks.md) for the method, earlier baseline, and limits, and [architecture](docs/architecture.md) for the design.
+The November 17 measurements scanned 100,000 mostly unique files in 3.61 / 3.62 s and duplicate-heavy files in 7.76 / 7.93 s, with about 17.3 MiB peak process RSS. Review queries stayed below 49 ms and cancellation returned within 88 ms. Phase diagnostics identify file verification as the largest cost; earlier slower results did not reproduce, so no general speedup is claimed. A separate 20,000-file size bucket passed three scans at 1.04–1.08 s and about 26.2 MiB peak RSS. The earlier 256 MiB duplicate fixture improved from 0.167 s to 0.035 s using revalidated full hashes. See [benchmarks](docs/benchmarks.md) for methods, prior results, and limits, and [architecture](docs/architecture.md) for the design.
 
 - Scans read files and never change them. Cleanup arrives in v0.3.
 - File types come from extensions only. Duplicates are exact byte matches. Similar images use a 64-bit difference hash, so heavy crops, mirrored, and rotated copies are not found, and HEIC and RAW photos are not read.

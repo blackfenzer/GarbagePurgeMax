@@ -9,7 +9,7 @@ use scan_engine::{
 };
 use scan_store::ScanWriter;
 
-use super::{LARGE_FILE_BYTES, ScanActivity, ScanReport, UPDATE_INTERVAL};
+use super::{LARGE_FILE_BYTES, ScanActivity, ScanReport, ScanTimings, UPDATE_INTERVAL};
 use crate::workspace::{exclusions, storage};
 
 const PREVIEW_LIMIT: usize = 100;
@@ -20,6 +20,7 @@ pub(in crate::workspace) fn inspect_and_save(
     cancel: &AtomicBool,
     mut progress_changed: impl FnMut(ScanActivity),
 ) -> io::Result<ScanReport> {
+    let started = Instant::now();
     let (mut database, exclusions) = match database_path {
         Ok(path) => {
             let mut paths = storage::scan_exclusions(&root, &path)?;
@@ -41,6 +42,8 @@ pub(in crate::workspace) fn inspect_and_save(
                 }
             });
     let mut image_files = Vec::new();
+    let setup = started.elapsed();
+    let started = Instant::now();
     let mut report = inspect_folder(
         root,
         &exclusions,
@@ -54,6 +57,7 @@ pub(in crate::workspace) fn inspect_and_save(
         },
         |entry| {
             if let ScanEntry::File(file) = entry
+                && writer.is_some()
                 && is_hashable_image(&file.path)
             {
                 image_files.push(file.clone());
@@ -67,9 +71,12 @@ pub(in crate::workspace) fn inspect_and_save(
                 save_error = Some(error.to_string());
                 // Dropping the writer discards the entire incomplete database transaction.
                 writer = None;
+                image_files = Vec::new();
             }
         },
     )?;
+    report.timings.setup = setup;
+    report.timings.indexing = started.elapsed();
     if let Some(mut writer) = writer {
         let verification = if report.summary.cancelled {
             Ok(())
@@ -78,14 +85,27 @@ pub(in crate::workspace) fn inspect_and_save(
                 progress: report.summary.progress,
                 analyzing: true,
             });
-            verify_indexed_duplicates(&mut writer, &mut report.summary, cancel).and_then(|()| {
-                group_similar_images(&mut writer, &image_files, &mut report.summary, cancel)
+            verify_indexed_duplicates(
+                &mut writer,
+                &mut report.summary,
+                cancel,
+                &mut report.timings,
+            )
+            .and_then(|()| {
+                let started = Instant::now();
+                let result =
+                    group_similar_images(&mut writer, &image_files, &mut report.summary, cancel);
+                report.timings.image_analysis = started.elapsed();
+                result
             })
         };
         let saved = verification.and_then(|()| {
-            writer
+            let started = Instant::now();
+            let result = writer
                 .finish(&report.summary, report.large_file_count)
-                .map_err(io::Error::other)
+                .map_err(io::Error::other);
+            report.timings.commit = started.elapsed();
+            result
         });
         match saved {
             Ok(saved) => report.saved = Some(saved),
@@ -96,8 +116,11 @@ pub(in crate::workspace) fn inspect_and_save(
     // Optional OS statistics must never discard a successful scan or delay an
     // already-cancelled scan. This query stays on the background worker.
     if !report.summary.cancelled && !cancel.load(Ordering::Relaxed) {
+        let started = Instant::now();
         report.volume_space = Some(volume_space(&report.root).map_err(|error| error.to_string()));
+        report.timings.volume_query = started.elapsed();
     }
+    log::debug!("Scan phases: {:?}", report.timings);
     Ok(report)
 }
 
@@ -105,13 +128,18 @@ fn verify_indexed_duplicates(
     writer: &mut ScanWriter<'_>,
     summary: &mut ScanSummary,
     cancel: &AtomicBool,
+    timings: &mut ScanTimings,
 ) -> io::Result<()> {
     let mut after_size = None;
     let mut error_count = 0_u64;
     while !cancel.load(Ordering::Relaxed) {
+        let started = Instant::now();
         let files = writer
             .next_duplicate_candidates(after_size)
-            .map_err(io::Error::other)?;
+            .map_err(io::Error::other);
+        timings.candidate_queries += started.elapsed();
+        let files = files?;
+        timings.largest_candidate_set = timings.largest_candidate_set.max(files.len());
         let Some(first) = files.first() else {
             if cancel.load(Ordering::Relaxed) {
                 break;
@@ -121,7 +149,10 @@ fn verify_indexed_duplicates(
                 .map_err(io::Error::other);
         };
         after_size = Some(first.logical_bytes);
+        let started = Instant::now();
         let analysis = verify_duplicate_group_cached(&files, cancel, writer);
+        timings.duplicate_verification += started.elapsed();
+        let started = Instant::now();
         writer
             .record_cache_usage(analysis.cache_hits, analysis.cache_misses)
             .map_err(io::Error::other)?;
@@ -142,6 +173,7 @@ fn verify_indexed_duplicates(
                 .insert_duplicate_group(&group.paths, &group.hash)
                 .map_err(io::Error::other)?;
         }
+        timings.duplicate_writes += started.elapsed();
     }
     summary.cancelled = true;
     Ok(())
@@ -217,6 +249,7 @@ fn inspect_folder(
         large_file_count,
         saved: None,
         save_error: None,
+        timings: ScanTimings::default(),
     })
 }
 
@@ -240,6 +273,122 @@ mod tests {
     use scan_store::SavedScan;
     use std::fs::File;
     use std::time::Duration;
+
+    #[test]
+    fn corrupt_storage_preserves_database_and_bounds_the_image_file_preview() -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("tree");
+        std::fs::create_dir(&root)?;
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        std::fs::create_dir(database.parent().unwrap())?;
+        let original = b"corrupt database fixture; do not replace";
+        std::fs::write(&database, original)?;
+        for index in 0..250 {
+            std::fs::write(root.join(format!("image-{index}.png")), b"not an image")?;
+        }
+        let report = inspect_and_save(root, Ok(database.clone()), &AtomicBool::new(false), |_| {})?;
+        assert!(report.save_error.is_some());
+        assert!(report.saved.is_none());
+        assert_eq!(report.summary.progress.files, 250);
+        assert_eq!(report.largest_files.len(), PREVIEW_LIMIT);
+        assert_eq!(report.timings.largest_candidate_set, 0);
+        assert_eq!(report.timings.image_analysis, Duration::ZERO);
+        assert_eq!(std::fs::read(database)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn disappearing_files_preserve_index_and_other_analysis_groups() -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("tree");
+        std::fs::create_dir(&root)?;
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        for name in ["a", "b", "missing"] {
+            std::fs::write(root.join(format!("{name}.txt")), b"same")?;
+            image::RgbImage::new(8, 8)
+                .save(root.join(format!("{name}.png")))
+                .map_err(io::Error::other)?;
+        }
+        let report = inspect_and_save(
+            root.clone(),
+            Ok(database.clone()),
+            &AtomicBool::new(false),
+            |activity| {
+                if activity.analyzing {
+                    std::fs::remove_file(root.join("missing.txt")).unwrap();
+                    std::fs::remove_file(root.join("missing.png")).unwrap();
+                }
+            },
+        )?;
+        assert!(report.save_error.is_none());
+        let saved = report.saved.unwrap();
+        assert_eq!(saved.progress.files, 6);
+        assert_eq!(saved.duplicate_group_count, 2);
+        assert_eq!(saved.duplicate_error_count, 2);
+        assert_eq!(saved.similar_group_count, 1);
+        assert_eq!(saved.image_error_count, 1);
+        assert!(saved.duplicates_analyzed && saved.similar_images_analyzed);
+        assert!(saved.first_error.as_ref().unwrap().contains("missing"));
+        let reopened = storage::open_at(&database)?;
+        assert_eq!(
+            reopened
+                .files(saved.id, "", 10, 0)
+                .map_err(io::Error::other)?
+                .len(),
+            6
+        );
+        assert_eq!(
+            reopened.scans(1, 0).map_err(io::Error::other)?[0].duplicate_error_count,
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "benchmark: run in release with --ignored --nocapture"]
+    fn benchmark_large_candidate_set() -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("tree");
+        std::fs::create_dir(&root)?;
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        const FILES: u64 = 20_000;
+        for index in 0..FILES {
+            let mut bytes = vec![0_u8; 4096];
+            if index >= FILES / 2 {
+                bytes[..8].copy_from_slice(&index.to_le_bytes());
+            }
+            std::fs::write(root.join(format!("file-{index:05}")), bytes)?;
+        }
+        for pass in 1..=3 {
+            let started = Instant::now();
+            let report = inspect_and_save(
+                root.clone(),
+                Ok(database.clone()),
+                &AtomicBool::new(false),
+                |_| {},
+            )?;
+            println!(
+                "Large candidate set, pass {pass}: {:.3} s · {:?}",
+                started.elapsed().as_secs_f64(),
+                report.timings
+            );
+            assert!(report.save_error.is_none());
+            assert_eq!(report.timings.largest_candidate_set, FILES as usize);
+            let saved = report.saved.unwrap();
+            assert_eq!(saved.progress.files, FILES);
+            assert_eq!(saved.duplicate_group_count, 1);
+            assert_eq!(saved.duplicate_error_count, 0);
+            let store = storage::open_at(&database)?;
+            assert_eq!(
+                store
+                    .duplicate_groups(saved.id, 10, 0)
+                    .map_err(io::Error::other)?[0]
+                    .file_count,
+                FILES / 2
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn previews_the_largest_files_and_counts_threshold_matches() -> io::Result<()> {
@@ -633,6 +782,7 @@ mod tests {
                     }
                 })?;
             let total = started.elapsed();
+            println!("Scan phases ({pass}): {:?}", report.timings);
             assert!(report.save_error.is_none(), "{:?}", report.save_error);
             let saved = report.saved.expect("benchmark scan saved");
             assert_eq!(saved.progress.files, BENCHMARK_FILES);

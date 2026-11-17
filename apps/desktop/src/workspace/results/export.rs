@@ -2,7 +2,7 @@
 use std::fs;
 use std::io::{self, BufWriter, Write as _};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use gpui_kit::{AppContext as _, Context};
 use scan_engine::{assess_risk, cleanup_candidate, file_type};
@@ -94,8 +94,7 @@ fn export_scan(store: &ScanStore, scan: &SavedScan, destination: &Path) -> io::R
         ));
     }
     let mut partial = tempfile::NamedTempFile::new_in(&directory)?;
-    let scanned_at =
-        UNIX_EPOCH + Duration::from_millis(u64::try_from(scan.started_unix_ms).unwrap_or(0));
+    let scanned_at = scan.started_at()?;
     let status = if scan.cancelled {
         "cancelled"
     } else {

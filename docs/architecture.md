@@ -9,6 +9,7 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `apps/desktop/src/main.rs` | Initializes logging, GPUI Kit and the native window. Quits when the window closes. | In source |
 | `apps/desktop/src/workspace.rs` | Owns navigation and the active file selection. | In source |
 | `apps/desktop/src/workspace/overview.rs` | Renders scan controls and progress. | In source |
+| `apps/desktop/src/workspace/overview/saved.rs` | Loads and renders five recent saved scans, the latest findings and storage categories, and scan-specific actions. | In source |
 | `apps/desktop/src/workspace/scan.rs` | Connects native folder selection and background scheduling to workspace state. | In source |
 | `apps/desktop/src/workspace/scan/job.rs` | Runs the blocking scan/index/analysis pipeline and its integrated fixture tests and benchmarks. | In source |
 | `apps/desktop/src/workspace/results.rs` | Renders saved file pages, the fallback preview, and example records. | In source |
@@ -53,7 +54,17 @@ The engine streams file and directory observations through `scan_entries`, a syn
 
 The desktop runs one scan on the GPUI background executor. It samples a single shared progress snapshot at 100 ms intervals and receives completion through a one-slot channel. It streams file metadata to SQLite and retains at most 200 records while selecting the 100 largest in case saving fails. The large-file threshold is 1 GiB. Exclusions are saved atomically in the app data directory and apply to future scans. The background scan reads a snapshot before walking the tree.
 
+Image records are retained for analysis only while the database writer is available. If indexing fails, the worker drops the transaction and releases the queued image records, then continues collecting the bounded fallback preview. Existing history and a corrupt database file are never replaced as part of fallback. Scan reports retain phase durations and peak candidate-set count for debug logging and reproducible benchmarks; these diagnostics contain no paths and do not change the schema. Successful-write workloads still retain a full image list and one full same-size candidate set, so memory is not globally constant.
+
 The analyzer reads one equal-size candidate set at a time from SQLite. It samples up to 8 KiB from each end with SHA-256, hashes remaining candidates in full, and compares matching candidates byte for byte. For files at most 16 KiB the sample covers every byte in order, so it already is the full hash; no second hash read is needed. Final byte comparison still reopens and revalidates each file. Each analysis set retains its candidates in memory. The analyzer compares available indexed size and timestamps before reading and revalidates native identity and metadata around each read. It captures file identity when verification first opens the file. A replacement that preserves all recorded metadata before that point can pass the initial check. The analyzer skips symlinks and reparse points and counts hard-linked names as one file identity. The traversal benchmark measures throughput, peak worker memory, and cancellation latency on a 100,000-file fixture.
+
+## Saved dashboard and Inspector evidence
+
+Overview loads its own bounded saved snapshot at startup, on entry, after scan completion, and on explicit Refresh. One background job reads the five latest committed scan records and computes file-type totals only for the newest. It uses the existing history and categorization queries; no schema or dependency changes are needed. The job handle cancels obsolete UI continuations when refreshing. Loading clears the previous snapshot so stale findings are not presented as fresh after a failed read. Running transactions remain absent from history; a cancelled scan can be the newest saved scan and is labelled as a partial index.
+
+The dashboard distinguishes verified duplicate groups from heuristic similar-image groups, and separately shows each analysis stage's completion and skipped checks. Its Open, Review, and Scan again buttons carry the row's saved scan or native root. Opening Review also selects that same scan in Results so later sidebar navigation stays consistent. Storage totals are indexed logical bytes by extension, not physical or reclaimable space. Only the category totals and five scan records are retained; category computation still reads the newest scan's file rows off the UI thread.
+
+File Inspector shows extension-based type and the engine's existing cleanup candidate/evidence alongside risk and duplicate evidence. `SavedScan::started_at` supplies a checked conversion of the persisted timestamp to Inspector, Review, and CSV, including times before the Unix epoch. Age-based evidence stays anchored to the scan rather than drifting when history is reopened. Unsaved previews lack a persisted observation time and explicitly show cleanup evidence as unavailable.
 
 ## Volume-space snapshot
 

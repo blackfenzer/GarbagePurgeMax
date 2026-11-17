@@ -48,6 +48,8 @@ The fixture contains searchable files, duplicates, same-size differences, sparse
 7. While a scan runs, open a completed scan and search its saved results. Close/restart the app and reopen both completed and partial history.
 8. Repeat with a mounted test volume. On Windows, also check native paths, permission errors, and reparse points on Windows 11 x64.
 9. After completion, return to Overview and inspect Volume space. Confirm capacity/available bytes are labelled as a last-scan snapshot, separate from folder logical size. Repeat with a cancelled scan and confirm no space reading is shown. Test a quota-limited account and mounted volume where available; unavailable statistics must leave scan results usable.
+10. Restart and inspect Saved scans on Overview. Confirm the latest findings and type totals match that saved scan, recent rows are newest first and limited to five including the latest, and an incomplete analysis does not claim zero verified findings. Exercise Refresh, Open results, Review findings, Scan again, and All scan history with keyboard and mouse. After opening Review from a row, switch to Results and confirm the same scan is selected.
+11. Select an archive, an empty file, and an old download in File Inspector. Compare cleanup evidence and risk with Review and CSV. Age evidence must stay anchored to the saved scan date after reopening; an unsaved preview should report cleanup evidence as unavailable.
 
 Record platform/version, exact build revision, fixture, result, and any differences. Capture screenshots of Overview, Results/Inspector, and each Review tab plus a short Select → Scan → Review → Export demo only after these steps actually run. No screenshots or demo are claimed for the current pass.
 
