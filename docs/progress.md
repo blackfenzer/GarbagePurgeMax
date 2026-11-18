@@ -1,5 +1,35 @@
 # Development progress
 
+## 2026-11-17 · Curated read-only browser cache evidence
+
+Implemented the initial app cache policy task for Google Chrome stable and Chromium HTTP caches. The engine matches only documented default native layouts under macOS `/Users/<account>/Library/Caches` or Windows drive-rooted `Users/<account>/AppData/Local`; custom roots, other browsers/channels, UNC paths, and sibling profile data are excluded. Known path literals are compared without converting account, profile, or filename identity to lossy text. Parent traversal is rejected. Policy sources and exact limits are recorded in [cache policies](cache-policies.md).
+
+Review, Inspector, and CSV use the same existing cleanup-candidate API, with App caches appended to preserve earlier group identifiers. A cache match supplies explicit metadata-only evidence and Protected risk; no browser contents, process state, deletion, or reclaimable-space claims are involved. Empty-file precedence remains unchanged. Saved scans gain the classification through metadata queries without a schema migration or reopening source files.
+
+On Apple Silicon/macOS 27.2, **78 Rust tests passed**, with five benchmark tests ignored by the normal invocation. New tests cover both platform layouts, rejected siblings and channels, absolute/native paths, parent traversal, non-UTF-8 names and empty-file precedence, and a reopened synthetic SQLite scan whose Review candidates and CSV agree. The added native-name assertions also passed individually. Rustfmt, strict Clippy, and debug/release builds passed. The rebuilt macOS ZIP passed the new archive verifier. The preceding **14 packaging** and **6 schema** checks remain applicable; no package or SQL implementation changed in this batch. The known local symbol-stripping warning remains.
+
+Windows layout tests ran here, but Windows native path execution and real browser installations are unverified. Interactive acceptance remains blocked by the capture failure recorded below. No additional benchmark run or performance claim was made for these metadata rules. Broader application support needs separately curated evidence; reviewed cleanup/recovery and signed distribution remain future milestones, not completed work.
+
+## 2026-11-17 · Package verification and CI artifacts
+
+Development ZIPs now include a version/platform manifest and SHA-256 payload hashes. The packager validates the completed archive before atomic replacement. A standalone `verify_package.py` checks the exact file layout, duplicate entries, regular-file types, streaming hashes, native executable architecture, and macOS launch metadata/execute permissions without extracting or executing the app. Metadata reads and hash buffers are bounded. These integrity checks do not provide signing or publisher authentication.
+
+Both native workflows now build and verify release ZIPs after their existing checks and upload artifacts named with the platform and source revision, retained for 14 days. The upload action is pinned to its official v4.6.2 commit. Workflow YAML parses locally; remote execution is still unverified. Shell access to GitHub failed DNS resolution, so no remote CI run is claimed.
+
+Verified on Apple Silicon/macOS 27.2: **14 packaging tests** and **6 SQLite schema tests** passed. New package tests cover modified payloads, malformed/oversized manifests, duplicate/unexpected files, wrong architecture/version, invalid launch metadata even with a matching checksum, missing execute permission, symlinks, invalid ZIP data, and preservation of earlier artifacts on validation failure. The release build and standalone verification of `target/packages/Storage-Clinic-0.1.0-macos-arm64.zip` passed. The previously documented `rust-objcopy` missing-`libLLVM.dylib` stripping warning remains. The unchanged Rust application retains the preceding 74-test, Rustfmt, strict Clippy, and debug-build results; those checks and benchmarks were not repeated for Python/workflow-only changes.
+
+Retried native testing through the extracted app bundle. Desktop automation failed with ScreenCaptureKit error -3811 (audio/video capture failure), so packaged launch and all current visual/keyboard checks remain unverified. Process inventory was also unavailable (`sysmond` service missing). No screenshots or demo were fabricated. Windows hardware/runtime, mounted volumes, real-photo calibration, accessibility, signed distribution, and later mutation/recovery work remain open as detailed in the task and release checklists.
+
+## 2026-11-17 · UI state and evidence hardening
+
+Source review found that Overview's last-scan card could navigate to a different previously opened history entry, CSV export accepted overlapping requests, and the Results age filter still clamped negative scan timestamps. Fixed the navigation target, added a Results-owned export busy flag across picker/write phases and scan switches, and routed age filtering through the shared saved timestamp with checked arithmetic and visible errors.
+
+Review now preserves incomplete-analysis and skipped-check notices even when saved groups exist. Empty messages distinguish unavailable/incomplete analysis, partial indices, checked files/images with no groups, metadata candidates, and observed folders. A Refresh button reloads the current group page and its initial previews using the existing background tasks. Status rules and their tests live in `workspace/review/status.rs`.
+
+Verified on Apple Silicon/macOS 27.2: **74 Rust tests passed** (five benchmarks ignored by the default invocation), Rustfmt, strict Clippy, and the debug build. New tests exercise age cutoffs through real SQLite queries at pre-epoch nanosecond boundaries, overflow rejection, and Review notices for incomplete groups, completed empty checks, and skipped/error counts. Existing CSV I/O tests still pass. No schema, dependency, or packaging-script changes were needed.
+
+The release build passed, and the rebuilt macOS ZIP passed integrity, launch-metadata, executable-permission, and current-binary equality checks. The existing local `rust-objcopy` missing-`libLLVM.dylib` stripping warning remains. Native navigation, repeated-click export/picker behavior, Review Refresh, keyboard/accessibility, Windows, and mounted-volume checks remain untested; their exact scenarios are added to the release checklist. This pass is source-level UI hardening, not an interactive smoke test or accessibility certification. Benchmarks were not repeated because scanning and verification algorithms are unchanged.
+
 ## 2026-11-17 · Performance diagnostics and failure recovery
 
 Added wall-clock diagnostics for setup, indexing, candidate queries, duplicate verification/writes, image analysis, commit, and the volume query, plus the largest same-size candidate set. Release benchmarks print them; ordinary runs can enable `RUST_LOG=storage_clinic=debug`. Timings do not claim device throughput or phase-specific CPU measurements.

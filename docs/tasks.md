@@ -1,6 +1,6 @@
 # Storage Clinic development plan
 
-This plan follows the [Storage Clinic product and engineering spec](https://docs.google.com/document/d/18SDjWNdy-TYGB-RnyspMEBs-md3MumCaWI_fc94-HQc/edit) and reflects the repository as of November 16, 2026. See [architecture](architecture.md) for implementation decisions and [progress](progress.md) for verification evidence.
+This plan follows the [Storage Clinic product and engineering spec](https://docs.google.com/document/d/18SDjWNdy-TYGB-RnyspMEBs-md3MumCaWI_fc94-HQc/edit) and reflects the repository as of November 18, 2026. See [architecture](architecture.md) for implementation decisions and [progress](progress.md) for verification evidence.
 
 ## Grouped implementation batches
 
@@ -8,8 +8,10 @@ This plan follows the [Storage Clinic product and engineering spec](https://docs
 | --- | --- | --- |
 | Dashboard and inspection | Latest saved findings, five recent scans, storage categories, Open/Review/Scan again actions, and Inspector cleanup evidence | Implemented together. Saved data loads off the UI thread at startup, when opening Overview, after a scan, and on Refresh. Partial/incomplete analysis stays visible. Inspector, Review, and CSV share the saved observation time. 67 Rust tests pass; interactive review remains pending. |
 | Performance and reliability | Isolate small-file timing variation, exercise larger candidate sets and error recovery, compare memory/cancellation on the same fixtures | First pass implemented: phase diagnostics, 20,000-candidate benchmark, corrupt-storage/disappearing-file/savepoint/finalization regression tests, and image-candidate release on storage failure. File verification dominates the measured workload; earlier timing variance remains unresolved. See benchmarks. |
-| Platform and release validation | Windows native build/runtime, macOS packaged launch, mounted volumes, accessibility, real-photo calibration, screenshots/demo, signing and updates | Requires native interactive checks and distribution decisions. User will perform manual checks later; unsigned packages are available. |
-| Reviewed cleanup and recovery | Queue, confirmation, revalidation, Trash/Recycle Bin actions, journals and restore | Separate future milestone. Remains outside the current read-only contract. |
+| UI state and evidence | Correct last-scan navigation, prevent overlapping exports, align age filters with saved time, and distinguish partial Review results from empty completed checks | Implemented and covered by age-boundary and Review-status tests; native navigation, picker, and Refresh behavior still need manual checks. This is not a completed accessibility audit. |
+| Curated app cache evidence | Document default app locations, exclude adjacent profile data, and share candidate/risk evidence across Review, Inspector, and CSV | Initial Chrome and Chromium HTTP cache policies implemented with synthetic cross-platform layout and persisted-evidence tests. Other apps/locations require separately supported policies. Native Windows acceptance remains pending. |
+| Platform and release validation | Validated native packages, CI artifacts, Windows runtime, macOS packaged launch, mounted volumes, accessibility, real-photo calibration, screenshots/demo, signing and updates | Package manifests, standalone verification, and CI artifact uploads are implemented; 14 packaging tests pass. Local macOS package verified. Native launch retry failed in desktop screen capture; Windows, remote CI, and other interactive/distribution gates remain open. |
+| Reviewed cleanup and recovery | Queue, confirmation, revalidation, Trash/Recycle Bin actions, journals and restore | v0.3 implementation complete; native macOS Trash test blocked by permissions, Windows build/runtime and interactive acceptance pending. See cleanup-recovery.md. |
 
 Named profiles, deeper archive previews, and customization remain conditional rather than expanding the current batches.
 
@@ -24,7 +26,7 @@ Named profiles, deeper archive previews, and customization remain conditional ra
 - [x] Harden export, cover the integrated workflow and migration upgrades, and rerun local release checks.
 - [x] Record current benchmark results and exact remaining platform/release gates. See [progress](progress.md) and the [release checklist](release.md).
 
-This pass keeps the selected tree read-only. The v0.3 actions and v1.0 distribution work below remain future milestones; conditional profiles and customization require evidence before implementation.
+The foundation keeps scans read-only. v0.3 adds a separately confirmed mutation workflow at the user’s request; v1.0 distribution and conditional customization remain separate milestones.
 
 The release flow is **Select Folder → Scan → Analyze → Inspect Results** on Apple Silicon macOS and Windows 11 x64. Scans read the selected files and save metadata locally.
 
@@ -73,24 +75,28 @@ The current pass adds macOS CI and strengthens Windows CI with formatting, Clipp
 
 ## v0.3 · Reviewed cleanup and recovery
 
-Deferred beyond this read-only release. These are implementation tasks, not skipped tests or completed features. Trash/Recycle Bin, recovery journaling, and reclaimable-space evidence require a separately validated mutation workflow.
+Implemented in the 0.3.0 development build. Scans remain read-only. See [cleanup and recovery](cleanup-recovery.md) for the contract, state transitions, and native acceptance limits.
 
-- [ ] Add Cleanup Queue and Recovery History. Build a reviewable plan with the proposed action, copy to keep, consequences, and recovery method.
-- [ ] Add explicit confirmation and pre-action revalidation. Preserve at least one verified copy in every duplicate group.
-- [ ] Implement recoverable cleanup through macOS Trash and Windows Recycle Bin where supported. Surface per-item capability and results.
-- [ ] Journal operations and build restore and partial-failure handling. Test controlled files, interruptions, and recovery on both operating systems.
-- [ ] Estimate reclaimable space separately from logical bytes. Verify actual free-space change after cleanup and report uncertainty for hard links, clones, sparse or compressed files, and cloud placeholders.
+- [x] Add Cleanup Queue and Recovery History with proposed actions, original/kept paths, consequences, recovery method, and bounded pagination.
+- [x] Require explicit confirmation, exact queue membership, current exclusions and pre-action identity/content/risk revalidation. Reserve a distinct byte-verified kept copy across active cleanup history.
+- [x] Implement native macOS Trash and Windows Recycle Bin adapters without a permanent-deletion fallback. Show per-item validation errors, receipts, and uncertain outcomes. **Native acceptance pending below.**
+- [x] Persist durable intents, receipts and outcomes; implement no-overwrite restore, cancellation, partial failures, and read-only reconciliation. Inject interruption and journal-write failures on disposable fixtures.
+- [x] Separate logical bytes, potential allocation upper bounds, expected immediate release (zero), and observed free-space change. Block hard links and detected placeholders; disclose clone/compression/sparse/cloud uncertainty.
+- [ ] Complete native macOS Trash/restore and interactive acceptance. The disposable native test was attempted and rejected by filesystem permissions; no successful native round trip is claimed.
+- [ ] Compile and run native Windows cleanup/recovery acceptance, including collisions, unavailable Recycle Bin, permissions, interruptions, and mounted volumes. Deferred on this Mac at the user's request.
 
 ## v1.0 · Product hardening
 
-Current hardening includes bounded thumbnails and candidate previews, decoder limits, WAL readers, keyboard-focusable review buttons, safer export, and regression tests. Overview now shows OS-reported volume capacity and available space for the latest scan in this session. Full accessibility audits, app-specific cache policies, signed installers, updates, and publication remain open.
+Current hardening includes bounded thumbnails and candidate previews, decoder limits, WAL readers, keyboard-focusable review buttons, safer export, and regression tests. Overview now shows OS-reported volume capacity and available space for the latest scan in this session. Initial app cache policies cover Chrome and Chromium HTTP caches. Full accessibility audits, broader policy coverage, signed installers, updates, and publication remain open.
 
 - [x] Show volume capacity and space available to the caller in Overview after a scan, distinct from logical folder size. Query off the UI thread, label the snapshot, and preserve results on query failure. macOS native query and regression tests pass; Windows execution and visual review remain pending.
 - [x] Complete the read-only dashboard and Inspector presentation: volume snapshot, latest saved findings, storage categories, recent scans, direct navigation, and metadata-based cleanup evidence. Automated data checks pass; visual and keyboard checks remain pending.
 - [ ] Add dashboard and Inspector review-action/recovery outcomes when the v0.3 mutation workflow exists.
-- [ ] Curate per-app cache policies with platform-specific fixtures and clear evidence for each classification.
+- [x] Curate initial read-only app cache policies with platform-specific fixtures and clear evidence: default Chrome and Chromium HTTP cache locations. [Policy scope and source evidence](cache-policies.md) explicitly exclude sibling profile data and custom locations. Windows native execution remains unverified; additional applications need their own curated policies.
 - [ ] Harden accessibility, keyboard navigation, throughput, memory limits, and error recovery on supported OS versions. Measure regressions against the same fixtures.
+- [x] Harden source-level UI state: last-scan navigation, single active CSV export, checked saved-time age filters, Review completion/error notices, and a Refresh action. Interactive acceptance remains on the release checklist.
 - [x] Build unsigned development ZIPs for native macOS arm64 and Windows x64 hosts, with layout, architecture, and failure-preservation tests. The macOS archive is built; packaged launch and actual Windows packaging still need platform testing.
+- [x] Verify completed package manifests, SHA-256 payload hashes, layout, architecture, and launch metadata before atomic replacement. Configure CI to upload development ZIPs after checks pass. Local archive and 14 packaging tests pass; remote artifact production still needs a workflow run.
 - [ ] Sign, notarize where applicable, and define the release and update process. Publish release builds, support docs, architecture diagram, reproducible benchmark results, screenshots, and a short demo.
 - [ ] Evaluate deeper archive previews and workspace customization against user evidence. Keep analysis local and require opt-in for any future telemetry.
 

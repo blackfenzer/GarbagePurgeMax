@@ -12,7 +12,9 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 log = "0.4"
 scan-engine = { path = "../../crates/scan-engine" }
 scan-store = { path = "../../crates/scan-store" }
+cleanup-engine = { path = "../../crates/cleanup-engine" }
 tempfile = "3"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+rusqlite = "=0.42.0"

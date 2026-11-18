@@ -6,12 +6,13 @@ import os
 from pathlib import Path
 import platform
 import plistlib
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import zipfile
+
+from verify_package import payload_paths, sha256_stream, validate_binary_target, validate_version, verify_package
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,27 +54,10 @@ def build_executable(root):
     return executable, package["version"], Path(metadata["target_directory"])
 
 
-def validate_binary_target(executable, target):
-    with executable.open("rb") as file:
-        header = file.read(64)
-        if target == "macos-arm64":
-            valid = (header[:4] == b"\xcf\xfa\xed\xfe"
-                     and int.from_bytes(header[4:8], "little") == 0x0100000C)
-        elif target == "windows-x64" and len(header) == 64 and header[:2] == b"MZ":
-            file.seek(int.from_bytes(header[60:64], "little"))
-            pe_header = file.read(6)
-            valid = pe_header == b"PE\x00\x00\x64\x86"
-        else:
-            valid = False
-    if not valid:
-        raise ValueError(f"Executable does not match {target}; check Cargo cross-compilation settings")
-
-
 def create_package(executable, version, target, output):
-    if target not in ("macos-arm64", "windows-x64"):
-        raise ValueError("Unsupported package target")
-    if not re.fullmatch(r"[0-9A-Za-z.+_-]+", version):
-        raise ValueError("Invalid package version")
+    files = payload_paths(target)
+    validate_version(version)
+    validate_binary_target(executable, target)
     output.mkdir(parents=True, exist_ok=True)
     destination = output / f"Storage-Clinic-{version}-{target}.zip"
     # Assemble only generated files. A failed build/archive leaves an existing ZIP intact.
@@ -110,10 +94,20 @@ def create_package(executable, version, target, output):
             "macOS notarization and Windows code signing have not been performed.\n"
             "Your OS may block downloaded unsigned applications. If blocked, use the\n"
             "documented source build workflow instead of disabling security settings.\n\n"
-            "Scans are local and read-only. Cleanup, deletion, and recovery are not enabled.\n"
-            "History and exclusions use the normal Storage Clinic app-data directory.\n",
+            "Scans are local and read-only. Reviewed cleanup requires explicit confirmation.\n"
+            "Cleanup moves eligible items to OS Trash / Recycle Bin; it never empties Trash.\n"
+            "Recovery depends on retained OS trash contents and the local operation journal.\n"
+            "Native cleanup/restore acceptance is pending; use disposable fixtures first.\n"
+            "History, exclusions and recovery records use the normal app-data directory.\n",
             encoding="utf-8",
         )
+        hashes = {}
+        for name in sorted(files):
+            with (payload / name).open("rb") as file:
+                hashes[name] = sha256_stream(file)
+        (payload / "manifest.json").write_text(json.dumps({
+            "schema_version": 1, "version": version, "target": target, "sha256": hashes,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         archive = staging / "package.zip"
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zipped:
             for file in sorted(payload.rglob("*")):
@@ -125,6 +119,7 @@ def create_package(executable, version, target, output):
                         info = zipped.getinfo(relative)
                         info.create_system = 3
                         info.external_attr = 0o100755 << 16
+        verify_package(archive, target, version)
         os.replace(archive, destination)
     return destination
 
@@ -132,7 +127,6 @@ def create_package(executable, version, target, output):
 def main():
     target = host_target()
     executable, version, target_directory = build_executable(ROOT)
-    validate_binary_target(executable, target)
     artifact = create_package(executable, version, target, target_directory / "packages")
     print(f"Unsigned package: {artifact}")
 
@@ -140,6 +134,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         print(f"Packaging failed: {error}", file=sys.stderr)
         sys.exit(1)

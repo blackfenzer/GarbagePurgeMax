@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::app_cache::app_cache_origin;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RiskTier {
     Protected,
@@ -10,9 +12,9 @@ pub enum RiskTier {
 impl RiskTier {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Protected => "Protected · review only",
-            Self::High => "High risk · review only",
-            Self::Unknown => "Unknown risk · review only",
+            Self::Protected => "Protected · cleanup blocked",
+            Self::High => "High risk · review carefully",
+            Self::Unknown => "Unknown risk · review carefully",
         }
     }
 }
@@ -33,6 +35,8 @@ pub fn assess_risk(path: &Path, read_only: bool) -> RiskAssessment {
     let contains = |known: &[&str]| names.iter().any(|name| known.contains(&name.as_str()));
     let protected = if read_only {
         Some("The indexed read-only attribute is set.")
+    } else if app_cache_origin(path).is_some() {
+        Some("A browser cache location may still contain data in use by the application.")
     } else if contains(&[
         "system",
         "windows",
@@ -45,6 +49,9 @@ pub fn assess_risk(path: &Path, read_only: bool) -> RiskAssessment {
         "sbin",
         "etc",
         "applications",
+        ".trash",
+        "$recycle.bin",
+        "system volume information",
     ]) {
         Some("A system or application location may contain required files.")
     } else if contains(&[

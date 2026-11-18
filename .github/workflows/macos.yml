@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 45
     env:
       STORAGE_CLINIC_TOOLCHAIN: 1.100.0-aarch64-apple-darwin
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,3 +36,13 @@ jobs:
         run: python3 -B .github/scripts/test_package.py
       - name: Build Storage Clinic
         run: rustup run "$STORAGE_CLINIC_TOOLCHAIN" cargo build --locked -p storage-clinic
+      - name: Build and verify unsigned package
+        run: rustup run "$STORAGE_CLINIC_TOOLCHAIN" python3 -B .github/scripts/package.py
+      - name: Upload unsigned development package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Storage-Clinic-macos-arm64-${{ github.sha }}
+          path: target/packages/Storage-Clinic-*-macos-arm64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

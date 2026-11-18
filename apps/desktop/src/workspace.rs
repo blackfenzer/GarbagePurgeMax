@@ -1,3 +1,4 @@
+mod cleanup;
 mod exclusions;
 mod history;
 mod overview;
@@ -20,6 +21,8 @@ enum Page {
     Results,
     History,
     Review,
+    Cleanup,
+    Recovery,
 }
 
 pub(crate) struct Workspace {
@@ -30,6 +33,7 @@ pub(crate) struct Workspace {
     history: history::History,
     overview: overview::SavedOverview,
     review: review::Review,
+    cleanup: cleanup::Cleanup,
 }
 
 impl Render for Workspace {
@@ -38,7 +42,14 @@ impl Render for Workspace {
             .child(self.navigation_item(Page::Overview, "Overview", IconName::LayoutDashboard, cx))
             .child(self.navigation_item(Page::Results, "Scan Results", IconName::FolderOpen, cx))
             .child(self.navigation_item(Page::Review, "Review", IconName::Copy, cx))
-            .child(self.navigation_item(Page::History, "Scan History", IconName::Calendar, cx));
+            .child(self.navigation_item(Page::History, "Scan History", IconName::Calendar, cx))
+            .child(self.navigation_item(Page::Cleanup, "Cleanup Queue", IconName::FolderOpen, cx))
+            .child(self.navigation_item(
+                Page::Recovery,
+                "Recovery History",
+                IconName::Calendar,
+                cx,
+            ));
 
         div()
             .flex()
@@ -65,6 +76,26 @@ impl Render for Workspace {
                         .render(self.can_start_scan(), cx)
                         .into_any_element(),
                     Page::Review => self.review.render(cx).into_any_element(),
+                    Page::Cleanup => self
+                        .cleanup
+                        .render(
+                            false,
+                            self.scan.active.is_some()
+                                || self.scan.choosing_folder
+                                || self.exclusion_settings_busy(),
+                            cx,
+                        )
+                        .into_any_element(),
+                    Page::Recovery => self
+                        .cleanup
+                        .render(
+                            true,
+                            self.scan.active.is_some()
+                                || self.scan.choosing_folder
+                                || self.exclusion_settings_busy(),
+                            cx,
+                        )
+                        .into_any_element(),
                 }),
             )
     }
@@ -82,6 +113,7 @@ impl Workspace {
             history: history::History::default(),
             overview,
             review: review::Review::default(),
+            cleanup: cleanup::Cleanup::default(),
         }
     }
 
@@ -105,6 +137,7 @@ impl Workspace {
                     }
                     Page::Overview => workspace.overview.load(cx),
                     Page::Results => {}
+                    Page::Cleanup | Page::Recovery => workspace.cleanup.load(0, cx),
                 }
                 cx.notify();
             }))

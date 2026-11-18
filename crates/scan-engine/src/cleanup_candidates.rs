@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use crate::FileRecord;
+use crate::{FileRecord, app_cache::app_cache_origin};
 
 /// A download untouched for this long when scanned is reported as old.
 pub const OLD_DOWNLOAD_DAYS: u64 = 90;
@@ -17,16 +17,18 @@ pub enum CleanupKind {
     Installer,
     Archive,
     OldDownload,
+    AppCache,
 }
 
 impl CleanupKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::EmptyFile,
         Self::TemporaryFile,
         Self::IncompleteDownload,
         Self::Installer,
         Self::Archive,
         Self::OldDownload,
+        Self::AppCache,
     ];
 
     pub fn label(self) -> &'static str {
@@ -37,6 +39,7 @@ impl CleanupKind {
             Self::Installer => "Installers",
             Self::Archive => "Archives",
             Self::OldDownload => "Old downloads",
+            Self::AppCache => "App caches",
         }
     }
 }
@@ -54,6 +57,14 @@ pub fn cleanup_candidate(file: &FileRecord, scanned_at: SystemTime) -> Option<Cl
     let candidate = |kind, evidence: String| Some(CleanupCandidate { kind, evidence });
     if file.logical_bytes == 0 {
         return candidate(CleanupKind::EmptyFile, "0 bytes when scanned".into());
+    }
+    if let Some(browser) = app_cache_origin(&file.path) {
+        return candidate(
+            CleanupKind::AppCache,
+            format!(
+                "Path matches {browser}'s default HTTP cache layout. Metadata evidence only; the browser may still use this file. Review only."
+            ),
+        );
     }
     let name = file.path.file_name()?.to_str()?;
     if let Some(origin) = temporary_file_origin(name) {

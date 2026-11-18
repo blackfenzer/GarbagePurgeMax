@@ -1,6 +1,6 @@
 # Architecture
 
-The [Storage Clinic product and engineering plan](https://docs.google.com/document/d/18SDjWNdy-TYGB-RnyspMEBs-md3MumCaWI_fc94-HQc/edit) defines the read-only v0.1 release for Apple Silicon and Windows 11 x64. The release workflow is Select Folder → Scan → Analyze → Inspect Results.
+The [Storage Clinic product and engineering plan](https://docs.google.com/document/d/18SDjWNdy-TYGB-RnyspMEBs-md3MumCaWI_fc94-HQc/edit) defines the read-only v0.1 release for Apple Silicon and Windows 11 x64. The foundation workflow is Select Folder → Scan → Analyze → Inspect Results. v0.3 adds Review → Queue → Confirm → Trash → Recovery as a separate mutation path.
 
 ## Repository and ownership
 
@@ -25,17 +25,18 @@ The [Storage Clinic product and engineering plan](https://docs.google.com/docume
 | `crates/scan-engine/src/duplicates.rs` | Verifies exact duplicates and optionally reuses revalidated full hashes. | In source |
 | `crates/scan-engine/src/file_version.rs` | Shares native identity and metadata checks between duplicate analysis, image analysis, and previews. | In source |
 | `crates/scan-engine/src/hash_cache.rs` | Defines the small caller-owned cache interface, with no database dependency. | In source |
-| `crates/scan-engine/src/risk.rs` | Classifies conservative location risks; every tier stays review-only. | In source |
+| `crates/scan-engine/src/risk.rs` | Classifies conservative location risks; Protected blocks cleanup and other tiers still require review and confirmation. | In source |
 | `crates/scan-engine/src/volume_space.rs` | Queries OS-reported volume capacity and available space with native paths and checked byte arithmetic. | In source |
 | `crates/scan-store/src/hash_cache.rs` | Implements transactional cache reads, writes, and usage accounting. | In source |
 | `crates/scan-engine/src/cleanup_candidates.rs` | Matches indexed file metadata against review-only cleanup rules and explains each match. | In source |
+| `crates/scan-engine/src/app_cache.rs` | Matches narrow native Chrome/Chromium HTTP cache layouts for shared candidate and protected-risk evidence; never reads browser data. | In source |
 | `crates/scan-engine/src/similar_images.rs` | Decodes supported images read-only with at most two workers, computes 64-bit difference hashes, and groups images within 6 bits of a reference image. | In source |
 | `crates/scan-engine/src/file_types.rs` | Names a broad file type from the path extension, with an Other fallback. | In source |
 | `crates/scan-engine/tests` | Exercises deterministic fixture trees in temporary directories. | In source |
 | `crates/scan-store` | Owns the SQLite migration, transactional writer, and queries for scan history and file search. | In source |
-| `.github/scripts` | Builds unsigned native development packages and tests archive layout and failure preservation. | In source |
+| `.github/scripts` | Builds unsigned native packages; a separate verifier checks manifests, streaming payload hashes, architecture, archive layout, and launch metadata before atomic replacement. Tests preserve earlier artifacts on failure. | In source |
 
-The desktop depends on the scanner and storage crates. Storage uses the scanner’s metadata types. The scanner has no SQLite or GPUI dependency. Keep file analysis and platform code in the scanner crate.
+The desktop depends on scanner, cleanup-engine, and storage crates. Cleanup-engine depends on scanner risk types but has no GPUI or SQLite dependency. Storage also uses cleanup evidence and receipt types. Storage uses the scanner’s metadata types. The scanner has no SQLite or GPUI dependency. Keep file analysis and platform code in the scanner crate.
 
 The desktop depends on engine types. The engine has no GPUI dependency. Features live with their views and state. A second caller or clearly separate maintenance responsibility should justify moving code into a shared module or crate. Keep Kit controls directly in the views so their documented focus and theme behavior remains inspectable.
 
@@ -65,6 +66,8 @@ Overview loads its own bounded saved snapshot at startup, on entry, after scan c
 The dashboard distinguishes verified duplicate groups from heuristic similar-image groups, and separately shows each analysis stage's completion and skipped checks. Its Open, Review, and Scan again buttons carry the row's saved scan or native root. Opening Review also selects that same scan in Results so later sidebar navigation stays consistent. Storage totals are indexed logical bytes by extension, not physical or reclaimable space. Only the category totals and five scan records are retained; category computation still reads the newest scan's file rows off the UI thread.
 
 File Inspector shows extension-based type and the engine's existing cleanup candidate/evidence alongside risk and duplicate evidence. `SavedScan::started_at` supplies a checked conversion of the persisted timestamp to Inspector, Review, and CSV, including times before the Unix epoch. Age-based evidence stays anchored to the scan rather than drifting when history is reopened. Unsaved previews lack a persisted observation time and explicitly show cleanup evidence as unavailable.
+
+Results age filters also use the shared saved time, with checked duration/subtraction. An invalid cutoff clears the file page and surfaces an error; choosing Any age does not require a valid cutoff. Overview's last-scan action explicitly loads its report instead of navigating to whichever history entry Results previously showed. CSV export has one busy flag owned by Results, covering picker and write phases across scan switches; status messages remain attached to the original scan ID, while completion always releases the shared flag. Review's status rules live beside the view in `review/status.rs`, keeping partial scans, unfinished analysis, traversal skips, and per-analysis errors distinguishable. Refresh reloads the current group page and then the first group's previews through the existing background/cancellation path.
 
 ## Volume-space snapshot
 
@@ -100,3 +103,11 @@ Migration v5 adds a transactional full-hash cache and per-scan hit/miss counters
 Risk assessment combines indexed read-only attributes with conservative, case-insensitive path-component rules. Known system, application, and cloud-managed locations are protected; known personal and development locations are high risk; everything else has unknown risk. This is path evidence, not comprehensive OS/cloud-provider detection. No tier authorizes removal. Risk and its reason appear in Review, File Inspector, and CSV.
 
 Export streams SQLite rows and bounded folder pages into a uniquely created temporary file beside the destination. Flush and sync precede atomic replacement; failures remove the temporary file and preserve the previous destination. Exports refuse the selected tree and the app-data directory, including ordinary symlink-parent aliases, and defuse formula-like CSV cells. Native paths are retained internally; CSV paths are display text, so CSV is not a lossless native-path backup.
+
+## Confirmed cleanup and recovery (v0.3)
+
+`workspace/cleanup.rs` owns bounded queue/history state and confirmation controls; `cleanup/job.rs` coordinates blocking evidence, journal and native operations. `crates/cleanup-engine` owns native filesystem proof and adapters. `crates/scan-store/src/cleanup.rs` and numbered migration 006 own the durable state machine and parameterized SQL. The schema is now version 6; recovery history survives removal of scan index records.
+
+All mutation work runs off GPUI. One app-owned OS file lock serializes cleanup/recovery across processes. SQLite WAL with synchronous FULL persists intent before native action and receipt before verification; there is no distributed transaction with the filesystem. Abandoned moving/restoring states become Attention on the next lock acquisition. No automatic retries occur. Current exclusions are read before queueing and each move, and scan/picker/exclusion controls cannot overlap cleanup in one workspace.
+
+The queue is capped at 200; history uses 30-item pages. Snapshot hashes are streamed, UI updates are bounded, and cancellation leaves unstarted items queued. Filesystem calls already in progress cannot be interrupted. [Cleanup and recovery](cleanup-recovery.md) defines evidence, kept-copy reservations, restoration, space reporting, and acceptance limits.

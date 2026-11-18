@@ -1,0 +1,1 @@
+SELECT EXISTS(SELECT 1 FROM cleanup_items WHERE state IN ('queued','moving','trashed','restoring','attention') AND (source_key = ?1 OR source_identity = ?2 OR keeper_key = ?1 OR keeper_identity = ?2 OR (?3 IS NOT NULL AND (source_key = ?3 OR source_identity = ?4))))

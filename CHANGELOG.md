@@ -1,9 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — development, 2026-11-18
 
 ### Added
 
+- Persistent Cleanup Queue and Recovery History; explicit move and restore confirmations, kept-copy selection, current-exclusion checks and fresh identity/content validation.
+- Independent cleanup-engine with macOS Trash and Windows Recycle Bin adapters; no permanent-delete fallback and no-overwrite restore.
+- SQLite migration 006 with durable operation intent, native receipts, per-item outcomes, cancellation, interrupted-operation reconciliation and cross-process cleanup locking.
+- Logical-size and allocated-size evidence kept separate from zero expected immediate reclamation and observed volume-space changes. Protected paths, hard links and detected cloud placeholders are blocked.
+- Disposable-fixture coverage for changed items, keeper preservation, cancellation, restore conflicts, interruptions, exclusions and journal-write failures.
+
+Native acceptance is pending: the macOS Trash fixture was blocked by filesystem permissions; Windows build/runtime and current interactive flows are unverified. See docs/progress.md for final automated results.
+
+## Earlier development work
+
+
+### Added
+
+- Review-only app cache evidence for default Chrome and Chromium HTTP cache locations on macOS and Windows. Review, Inspector, and CSV share the rules; matching locations stay protected, with sibling profile data excluded from the cache policy.
+- Development package manifests with SHA-256 payload checksums and a standalone archive verifier. Packages are checked for layout, native architecture, launch metadata, and executable permissions before replacing an earlier build. CI now builds and uploads unsigned ZIP artifacts after its checks pass.
 - Per-scan phase diagnostics and a reproducible 20,000-file same-size candidate benchmark, with regression coverage for corrupt storage, disappearing files, failed duplicate-group writes, and failed scan finalization.
 - A saved Overview dashboard with the latest scan's findings and storage categories, up to five recent scans, and Open results, Review findings, and Scan again actions. Loads after restart and refreshes after scans without blocking GPUI.
 - File Inspector now shows extension-based type and review-only cleanup evidence using the same saved observation time as Review and CSV. Incomplete analysis and partial indices remain explicit on the dashboard.
@@ -36,6 +51,10 @@
 
 ### Fixed
 
+- Overview's last-scan button now opens the scan described by its card, even after another history entry was opened.
+- CSV export allows only one picker/write operation at a time across scan navigation, and releases its busy state on cancellation, success, or failure.
+- Age filters use the saved scan timestamp with checked arithmetic, preserving pre-epoch boundaries and reporting invalid dates instead of panicking or silently changing the cutoff.
+- Review keeps partial-analysis and skipped-check notices visible when groups exist, uses precise empty-state messages, and provides Refresh to retry loading groups and previews.
 - Scans stop retaining image candidates when database saving is unavailable, and release queued image records after an indexing write failure.
 - Shared saved-scan time conversion preserves milliseconds before the Unix epoch instead of silently clamping cleanup evidence to 1970.
 - Duplicate candidates at most 16 KiB reuse their complete sample hash, avoiding a redundant read while retaining final byte comparison and identity checks. Zero-use cache counters no longer issue SQL updates.
@@ -53,7 +72,7 @@
 
 ### Verified
 
-- Current Apple Silicon pass: 71 Rust tests, formatting, strict Clippy, debug/release builds, and macOS archive contents. Earlier passes also passed 6 schema and 6 packaging tests. Packaged launch and Windows execution remain untested.
+- Current Apple Silicon pass: 74 Rust tests, formatting, strict Clippy, debug/release builds, and macOS archive contents. Earlier passes also passed 6 schema and 6 packaging tests. Packaged launch and Windows execution remain untested.
 - November 17 phase profiling: 100,000-file scans took 3.61 / 3.62 s for mostly unique files and 7.76 / 7.93 s for duplicate-heavy files. A 20,000-file candidate set passed three scans at 1.04–1.08 s; earlier timing variation is not considered resolved.
 - A focused alternating-order benchmark confirms less work in small-file hashing; full-scan measurements remain variable and do not establish an end-to-end speedup.
 - Three separately executed release benchmarks, including eight revalidated full-hash cache hits on a 256 MiB fixture. Current small-file timings and the earlier baseline are recorded separately in `docs/benchmarks.md`.

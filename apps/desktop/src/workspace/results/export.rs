@@ -19,7 +19,11 @@ cleanup_evidence,scan_status,entry_kind,risk,risk_evidence";
 
 impl Results {
     pub(super) fn export_csv(&mut self, cx: &mut Context<Workspace>) {
+        if self.exporting {
+            return;
+        }
         let Some(saved) = &mut self.saved else { return };
+        self.exporting = true;
         let scan = saved.scan.clone();
         let scan_id = scan.id;
         let directory = dirs::download_dir()
@@ -31,25 +35,30 @@ impl Results {
         cx.notify();
 
         cx.spawn(async move |workspace, cx| {
-            let set_status = |status: Option<String>, cx: &mut gpui_kit::AsyncApp| {
-                let _ = workspace.update(cx, |workspace, cx| {
-                    if let Some(saved) = &mut workspace.results.saved
-                        && saved.scan.id == scan_id
-                    {
-                        saved.export_status = status;
+            let set_status =
+                |status: Option<String>, finished: bool, cx: &mut gpui_kit::AsyncApp| {
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        // The export belongs to Results, even if another scan was opened.
+                        workspace.results.exporting = !finished;
+                        if let Some(saved) = &mut workspace.results.saved
+                            && saved.scan.id == scan_id
+                        {
+                            saved.export_status = status;
+                        }
                         cx.notify();
-                    }
-                });
-            };
+                    });
+                };
             let destination = match prompt.await {
                 Ok(Ok(Some(path))) => path,
-                Ok(Ok(None)) => return set_status(None, cx),
+                Ok(Ok(None)) => return set_status(None, true, cx),
                 Ok(Err(error)) => {
-                    return set_status(Some(format!("Could not export: {error}")), cx);
+                    return set_status(Some(format!("Could not export: {error}")), true, cx);
                 }
-                Err(error) => return set_status(Some(format!("Could not export: {error}")), cx),
+                Err(error) => {
+                    return set_status(Some(format!("Could not export: {error}")), true, cx);
+                }
             };
-            set_status(Some("Exporting…".into()), cx);
+            set_status(Some("Exporting…".into()), false, cx);
             let result = cx
                 .background_spawn(async move {
                     let rows = export_scan(&storage::open()?, &scan, &destination)?;
@@ -60,7 +69,7 @@ impl Results {
                 Ok((rows, path)) => format!("Exported {rows} items to {}", path.display()),
                 Err(error) => format!("Could not export: {error}"),
             };
-            set_status(Some(status), cx);
+            set_status(Some(status), true, cx);
         })
         .detach();
     }
@@ -223,6 +232,70 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use crate::workspace::scan::inspect_and_save;
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn saved_cache_evidence_is_shared_by_review_and_csv_without_reading_browser_data()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use scan_engine::{CleanupKind, FileRecord, RiskTier, ScanProgress, ScanSummary};
+
+        // Synthetic records only: never create or inspect an actual browser profile.
+        #[cfg(target_os = "macos")]
+        let profile = Path::new("/Users/storage-clinic-test/Library/Caches/Google/Chrome/Default");
+        #[cfg(windows)]
+        let profile = Path::new(
+            r"C:\Users\storage-clinic-test\AppData\Local\Google\Chrome\User Data\Default",
+        );
+        let fixture = tempfile::tempdir()?;
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        let mut store = storage::open_at(&database)?;
+        let mut writer = store.begin_scan(profile, 1_000)?;
+        let cache = FileRecord {
+            path: profile.join("Cache/Cache_Data/data_0"),
+            logical_bytes: 128,
+            created: None,
+            modified: None,
+            read_only: false,
+        };
+        writer.insert_file(&cache)?;
+        writer.insert_file(&FileRecord {
+            path: profile.join("Bookmarks"),
+            ..cache.clone()
+        })?;
+        let saved = writer.finish(
+            &ScanSummary {
+                progress: ScanProgress {
+                    files: 2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            0,
+        )?;
+        drop(store);
+        let reopened = storage::open_at(&database)?;
+        let candidates = reopened.cleanup_candidates(saved.id, saved.started_at()?)?;
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].0.path, cache.path);
+        assert_eq!(candidates[0].1.kind, CleanupKind::AppCache);
+        assert_eq!(assess_risk(&cache.path, false).tier, RiskTier::Protected);
+        let destination = fixture.path().join("cache.csv");
+        assert_eq!(export_scan(&reopened, &saved, &destination)?, 2);
+        let csv = fs::read_to_string(destination)?;
+        let cache_row = csv.lines().find(|line| line.contains("data_0")).unwrap();
+        assert!(
+            cache_row.contains(",App caches,Path matches Google Chrome"),
+            "{cache_row}"
+        );
+        assert!(cache_row.contains("Metadata evidence only"), "{cache_row}");
+        assert!(
+            cache_row.contains(",Protected · cleanup blocked,"),
+            "{cache_row}"
+        );
+        let bookmarks = csv.lines().find(|line| line.contains("Bookmarks")).unwrap();
+        assert!(!bookmarks.contains("App caches"), "{bookmarks}");
+        Ok(())
+    }
 
     #[test]
     fn exports_every_file_with_quoted_and_defused_cells() -> io::Result<()> {

@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+mod app_cache;
 mod cleanup_candidates;
 mod duplicates;
 mod file_types;

@@ -128,10 +128,16 @@ impl Workspace {
     }
 
     pub(super) fn can_start_scan(&self) -> bool {
-        !self.scan.choosing_folder && self.scan.active.is_none() && !self.exclusion_settings_busy()
+        !self.scan.choosing_folder
+            && self.scan.active.is_none()
+            && !self.exclusion_settings_busy()
+            && !self.cleanup.busy
     }
 
     fn start_scan(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if !self.can_start_scan() {
+            return;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.scan.active = Some(ActiveScan {
             root: root.clone(),

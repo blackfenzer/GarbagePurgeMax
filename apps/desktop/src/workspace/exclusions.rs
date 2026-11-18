@@ -32,7 +32,10 @@ impl Workspace {
     }
 
     pub(super) fn exclusion_controls_disabled(&self) -> bool {
-        self.exclusion_settings_busy() || self.scan.choosing_folder || self.scan.active.is_some()
+        self.exclusion_settings_busy()
+            || self.scan.choosing_folder
+            || self.scan.active.is_some()
+            || self.cleanup.busy
     }
 
     pub(super) fn choose_exclusion(&mut self, folder: bool, cx: &mut Context<Self>) {
@@ -150,6 +153,18 @@ pub(super) fn for_scan(root: &Path, database: &Path) -> io::Result<Vec<PathBuf>>
         }
     }
     Ok(relative_paths)
+}
+
+/// Re-read current exclusions before queueing and immediately before a cleanup action.
+pub(super) fn check_cleanup(source: &Path, database: &Path) -> io::Result<()> {
+    for excluded in read_paths(&settings_path(database))? {
+        if source.starts_with(&excluded) {
+            return Err(io::Error::other(
+                "This item is covered by a current exclusion",
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn path_label(path: &Path) -> String {

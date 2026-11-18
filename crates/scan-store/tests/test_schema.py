@@ -14,7 +14,7 @@ class SchemaTests(unittest.TestCase):
         self.db.create_function("file_type", 1, lambda path: "Other", deterministic=True)
         schema = "\n".join(
             (SQL / migration).read_text(encoding="utf-8")
-            for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql", "004_directories.sql", "005_hash_cache.sql")
+            for migration in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql", "004_directories.sql", "005_hash_cache.sql", "006_cleanup.sql")
         )
         self.db.executescript(f"PRAGMA foreign_keys = ON; BEGIN;\n{schema}\nCOMMIT;")
 
@@ -51,7 +51,7 @@ class SchemaTests(unittest.TestCase):
         ).fetchall()
 
     def test_history_includes_cancelled_scans_and_excludes_in_progress_scans(self):
-        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (5,))
+        self.assertEqual(self.db.execute("PRAGMA user_version").fetchone(), (6,))
         completed, cancelled, _ = (self.add_scan() for _ in range(3))
         self.finish_scan(completed, "completed")
         self.finish_scan(cancelled, "cancelled")
@@ -119,6 +119,35 @@ class SchemaTests(unittest.TestCase):
         self.db.execute("DELETE FROM scans WHERE id = ?", (scan,))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM directories").fetchone(), (0,))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM hash_cache").fetchone(), (0,))
+
+    def test_cleanup_receipts_state_constraints_and_history_retention(self):
+        scan = self.add_scan()
+        insert = """INSERT INTO cleanup_items
+                    (scan_id, source_key, source_identity, source_proof, reason, state,
+                     created_unix_ms, updated_unix_ms)
+                    VALUES (?, ?, ?, '{}', 'fixture', ?, 1000, 1000)"""
+        item = self.db.execute(insert, (scan, b"source", b"identity", "queued")).lastrowid
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute(insert, (scan, b"source", b"another-id", "queued"))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE cleanup_items SET state = 'trashed' WHERE id = ?", (item,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("UPDATE cleanup_items SET state = 'unknown' WHERE id = ?", (item,))
+        self.db.execute("UPDATE cleanup_items SET state = 'moving' WHERE id = ?", (item,))
+        self.db.execute("UPDATE cleanup_items SET receipt_key = ?, receipt_path = ?, state = 'trashed' WHERE id = ?", (b"opaque", b"trash/path", item))
+        self.db.execute("DELETE FROM scans WHERE id = ?", (scan,))
+        self.assertEqual(self.db.execute("SELECT state, receipt_key FROM cleanup_items WHERE id = ?", (item,)).fetchone(), ("trashed", b"opaque"))
+
+    def test_upgrade_from_v5_preserves_existing_history(self):
+        earlier = sqlite3.connect(":memory:")
+        self.addCleanup(earlier.close)
+        for name in ("001_initial.sql", "002_exact_duplicates.sql", "003_similar_images.sql", "004_directories.sql", "005_hash_cache.sql"):
+            earlier.executescript((SQL / name).read_text())
+        earlier.execute("INSERT INTO scans (root_key, display_root, started_unix_ms, finished_unix_ms, status, large_file_threshold) VALUES (?, 'old', 1, 2, 'completed', 100)", (b"old",))
+        earlier.executescript((SQL / "006_cleanup.sql").read_text())
+        self.assertEqual(earlier.execute("PRAGMA user_version").fetchone(), (6,))
+        self.assertEqual(earlier.execute("SELECT display_root, status FROM scans").fetchall(), [("old", "completed")])
+        self.assertEqual(earlier.execute("SELECT COUNT(*) FROM cleanup_items").fetchone(), (0,))
 
 
 if __name__ == "__main__":

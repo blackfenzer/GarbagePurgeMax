@@ -82,6 +82,16 @@ impl Results {
         saved.files.clear();
         saved.evidence.clear();
         saved.has_next = false;
+        let filter = match filter {
+            Ok(filter) => filter,
+            Err(error) => {
+                saved.loading = false;
+                saved.error = Some(format!("Could not apply age filter: {error}"));
+                self.replace_rows(FileRows::from_files(&[], 0, "", None), cx);
+                cx.notify();
+                return;
+            }
+        };
         let scan_id = saved.scan.id;
         let executor = cx.background_executor().clone();
         saved.request = Some(cx.spawn(async move |workspace, cx| {

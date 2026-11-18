@@ -1,0 +1,1 @@
+INSERT INTO cleanup_items (scan_id, source_key, source_identity, source_proof, keeper_key, keeper_identity, keeper_proof, reason, state, created_unix_ms, updated_unix_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,'queued',?9,?9)

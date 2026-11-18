@@ -1,6 +1,6 @@
 # Storage Clinic engineering guidelines
 
-Use [the development plan](docs/tasks.md) for milestone scope, [the architecture](docs/architecture.md) for module boundaries, and [the progress notes](docs/progress.md) for verified results. Keep the v0.1 workflow read-only and local.
+Use [the development plan](docs/tasks.md) for milestone scope, [the architecture](docs/architecture.md) for module boundaries, and [the progress notes](docs/progress.md) for verified results. Keep scans read-only and local. v0.3 mutations belong exclusively to the explicitly confirmed cleanup and recovery workflow.
 
 ## Folder ownership
 
@@ -11,10 +11,11 @@ Use [the development plan](docs/tasks.md) for milestone scope, [the architecture
 | `apps/desktop/src/workspace/` | Views and their state, native dialogs, and background job coordination. Keep supporting code with its feature, as in `results/`. |
 | `crates/scan-engine/src/` | Traversal, metadata, file identity, and analysis. Keep platform-specific code beside the feature it supports. |
 | `crates/scan-engine/tests/` and `crates/scan-engine/examples/` | Generated filesystem fixtures and reproducible scanner benchmarks. |
+| `crates/cleanup-engine/src/` | Pre-action evidence, native Trash/Recycle Bin adapters, and no-overwrite restore. No GPUI or SQLite. |
 | `crates/scan-store/src/` and `sql/` | SQLite connections, transactions, data encoding, ordered migrations, and parameterized queries. |
 | `docs/` and `.github/workflows/` | Architecture, tasks, benchmarks, and build automation. |
 
-Keep dependencies moving from desktop to the engine and store. The store can use scanner data types, and the scanner stays independent of GPUI and SQLite. Add a module when it gives a feature or platform adapter a clear home. Extract shared code when callers have the same responsibility and invariants. Add a crate when it has a meaningful dependency boundary or genuinely independent callers. Put new SQL beside the existing migrations and queries. Keep local references and build output under Git-ignored paths.
+Keep dependencies moving from desktop to the engine and store. The store can use scanner and cleanup evidence types, and the scanner stays independent of GPUI and SQLite. Add a module when it gives a feature or platform adapter a clear home. Extract shared code when callers have the same responsibility and invariants. Add a crate when it has a meaningful dependency boundary or genuinely independent callers. Put new SQL beside the existing migrations and queries. Keep local references and build output under Git-ignored paths.
 
 ## Readable Rust
 
@@ -26,7 +27,7 @@ Keep dependencies moving from desktop to the engine and store. The store can use
 
 ## Filesystem and desktop boundaries
 
-- Open the selected tree read-only. Keep database, settings, and temporary files in app-owned or test-owned locations. Keep excluded paths, symlinks, and reparse points outside traversal according to the scanner contract.
+- Open the selected tree read-only during scans. Only confirmed cleanup may move revalidated items to OS Trash; never permanently delete or empty Trash. Record durable intent and per-item receipts; never automatically retry interrupted mutations. Keep database, settings, and temporary files in app-owned or test-owned locations. Keep excluded paths, symlinks, and reparse points outside traversal according to the scanner contract.
 - Carry paths as `Path` or `PathBuf`. Convert to display text only for presentation or search. Retain native path identity through storage, and account for hard links when counting distinct files.
 - Keep traversal, hashing, and SQLite I/O off the GPUI thread. Keep work and UI updates bounded, preserve cancellation checkpoints, and make partial results and skipped entries visible.
 - Use parameterized SQL and transactions for persistent changes. Add a numbered migration and verify upgrades from databases produced by earlier versions.

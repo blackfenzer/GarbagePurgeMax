@@ -70,12 +70,17 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl Int
     };
     let results_button = Button::new("open-results")
         .ghost()
-        .label(if scan.report.is_some() || workspace.results.is_saved() {
-            "View results"
+        .label(if scan.report.is_some() {
+            "View last scan results"
+        } else if workspace.results.is_saved() {
+            "View open results"
         } else {
             "View sample results"
         })
         .on_click(cx.listener(|workspace, _, _, cx| {
+            if let Some(report) = &workspace.scan.report {
+                workspace.results.show_scan(report, cx);
+            }
             workspace.page = Page::Results;
             cx.notify();
         }));

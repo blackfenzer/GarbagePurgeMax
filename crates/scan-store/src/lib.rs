@@ -1,5 +1,7 @@
+mod cleanup;
 mod encoding;
 mod hash_cache;
+pub use cleanup::{CleanupItem, CleanupSession, CleanupState, QueueEntry};
 
 use std::collections::HashMap;
 use std::io;
@@ -19,12 +21,13 @@ use scan_engine::{
 use encoding::{datetime, decode_path, encode_path, time_parts, unix_millis};
 
 /// Applied in order. `user_version` counts how many have run.
-const MIGRATIONS: [&str; 5] = [
+const MIGRATIONS: [&str; 6] = [
     include_str!("../sql/001_initial.sql"),
     include_str!("../sql/002_exact_duplicates.sql"),
     include_str!("../sql/003_similar_images.sql"),
     include_str!("../sql/004_directories.sql"),
     include_str!("../sql/005_hash_cache.sql"),
+    include_str!("../sql/006_cleanup.sql"),
 ];
 const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 const LIST_SCANS: &str = include_str!("../sql/list_scans.sql");

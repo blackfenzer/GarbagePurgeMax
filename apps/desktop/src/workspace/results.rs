@@ -4,7 +4,8 @@ mod inspector;
 mod saved;
 
 use gpui_kit::base::StyledExt as _;
-use std::time::{Duration, UNIX_EPOCH};
+use std::io;
+use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _,
@@ -83,6 +84,7 @@ pub(super) struct Results {
     type_filter: Entity<Options>,
     age_filter: Entity<Options>,
     sort_order: Entity<Options>,
+    exporting: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -156,6 +158,7 @@ impl Results {
             type_filter,
             age_filter,
             sort_order,
+            exporting: false,
             _subscriptions: subscriptions,
         }
     }
@@ -166,30 +169,27 @@ impl Results {
         scan: &scan_store::SavedScan,
         duplicates_only: bool,
         cx: &App,
-    ) -> FileFilter {
+    ) -> io::Result<FileFilter> {
         let row = |state: &Entity<Options>| {
             state
                 .read(cx)
                 .selected_index(cx)
                 .map_or(0, |index| index.row)
         };
-        let scanned_at =
-            UNIX_EPOCH + Duration::from_millis(u64::try_from(scan.started_unix_ms).unwrap_or(0));
         let age_days = AGE_OPTIONS
             .get(row(&self.age_filter))
             .and_then(|(_, days)| *days);
-        FileFilter {
+        Ok(FileFilter {
             search: self.input.read(cx).value().to_string(),
             file_type: row(&self.type_filter)
                 .checked_sub(1)
                 .and_then(|index| FILE_TYPES.get(index).copied()),
-            modified_before: age_days
-                .map(|days| scanned_at - Duration::from_secs(days * 24 * 60 * 60)),
+            modified_before: age_cutoff(scan, age_days)?,
             sort: SORT_OPTIONS
                 .get(row(&self.sort_order))
                 .map_or(FileSort::Largest, |(_, sort)| *sort),
             duplicates_only,
-        }
+        })
     }
 
     fn sort_label(&self, cx: &App) -> &'static str {
@@ -443,7 +443,12 @@ impl Results {
                             .children(self.saved.as_ref().map(|_| {
                                 Button::new("export-csv")
                                     .small()
-                                    .label("Export CSV")
+                                    .label(if self.exporting {
+                                        "Export in progress…"
+                                    } else {
+                                        "Export CSV"
+                                    })
+                                    .disabled(self.exporting)
                                     .on_click(cx.listener(|workspace, _, _, cx| {
                                         workspace.results.export_csv(cx)
                                     }))
@@ -508,6 +513,25 @@ impl Results {
     }
 }
 
+fn age_cutoff(scan: &scan_store::SavedScan, days: Option<u64>) -> io::Result<Option<SystemTime>> {
+    let Some(days) = days else { return Ok(None) };
+    let seconds = days.checked_mul(24 * 60 * 60).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Age filter duration is too large",
+        )
+    })?;
+    scan.started_at()?
+        .checked_sub(Duration::from_secs(seconds))
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Age filter date is outside the supported range",
+            )
+        })
+}
+
 fn summary_line(progress: ScanProgress, cancelled: bool, large_file_count: u64) -> String {
     let status = if cancelled { "Cancelled scan · " } else { "" };
     format!(
@@ -518,4 +542,47 @@ fn summary_line(progress: ScanProgress, cancelled: bool, large_file_count: u64) 
         progress.skipped,
         progress.errors
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scan_engine::{FileRecord, ScanSummary};
+    use scan_store::{FileFilter, ScanStore};
+
+    #[test]
+    fn age_filter_uses_saved_time_and_preserves_pre_epoch_boundaries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = tempfile::tempdir()?;
+        let mut store = ScanStore::open(&fixture.path().join("scans.sqlite3"))?;
+        let mut writer = store.begin_scan(fixture.path(), 100)?;
+        let cutoff =
+            SystemTime::UNIX_EPOCH - Duration::from_millis(1) - Duration::from_secs(30 * 86400);
+        for (name, modified) in [
+            ("older", cutoff - Duration::from_nanos(1)),
+            ("boundary", cutoff),
+            ("newer", cutoff + Duration::from_nanos(1)),
+        ] {
+            writer.insert_file(&FileRecord {
+                path: fixture.path().join(name),
+                logical_bytes: 1,
+                created: None,
+                modified: Some(modified),
+                read_only: false,
+            })?;
+        }
+        let mut scan = writer.finish(&ScanSummary::default(), 0)?;
+        scan.started_unix_ms = -1;
+        assert_eq!(age_cutoff(&scan, Some(30))?, Some(cutoff));
+        let filter = FileFilter {
+            modified_before: age_cutoff(&scan, Some(30))?,
+            ..Default::default()
+        };
+        let matches = store.filtered_files(scan.id, &filter, 10, 0)?;
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path.file_name().unwrap(), "older");
+        assert_eq!(age_cutoff(&scan, None)?, None);
+        assert!(age_cutoff(&scan, Some(u64::MAX)).is_err());
+        Ok(())
+    }
 }

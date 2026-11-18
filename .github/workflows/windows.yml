@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 45
     env:
       STORAGE_CLINIC_TOOLCHAIN: 1.100.0-x86_64-pc-windows-msvc
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
     steps:
       - name: Check out source
@@ -45,3 +46,15 @@ jobs:
 
       - name: Build Storage Clinic
         run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN cargo build --locked --bin storage-clinic --target x86_64-pc-windows-msvc
+
+      - name: Build and verify unsigned package
+        run: rustup run $env:STORAGE_CLINIC_TOOLCHAIN python -B .github/scripts/package.py
+
+      - name: Upload unsigned development package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Storage-Clinic-windows-x64-${{ github.sha }}
+          path: target/packages/Storage-Clinic-*-windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

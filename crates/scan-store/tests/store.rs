@@ -586,6 +586,7 @@ fn upgrades_every_previous_schema_and_rolls_back_directory_and_cache_writes()
         include_str!("../sql/002_exact_duplicates.sql"),
         include_str!("../sql/003_similar_images.sql"),
         include_str!("../sql/004_directories.sql"),
+        include_str!("../sql/005_hash_cache.sql"),
     ];
     for version in 1..=migrations.len() {
         let root = tempfile::tempdir()?;
@@ -624,7 +625,7 @@ fn upgrades_every_previous_schema_and_rolls_back_directory_and_cache_writes()
         );
         assert_eq!(
             connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))?,
-            5
+            6
         );
     }
     Ok(())

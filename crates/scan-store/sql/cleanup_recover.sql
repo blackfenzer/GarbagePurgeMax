@@ -1,0 +1,1 @@
+UPDATE cleanup_items SET state = 'attention', message = 'Previous operation interrupted. Inspect the original path and OS Trash; do not retry cleanup automatically.', updated_unix_ms = ?1 WHERE state IN ('moving', 'restoring')

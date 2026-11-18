@@ -1,4 +1,5 @@
 use std::io;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -21,6 +22,8 @@ use scan_engine::{
 use scan_store::{DuplicateEvidence, ReviewGroup, SavedScan, SimilarImageEvidence};
 
 use super::{Workspace, scan::format_bytes, storage};
+
+mod status;
 
 const PAGE_SIZE: u32 = 30;
 /// Cards shown for one group. Candidate groups can hold thousands of files.
@@ -86,6 +89,7 @@ pub(super) struct Review {
     error: Option<String>,
     request: Option<Task<()>>,
     preview_request: Option<PreviewRequest>,
+    keeper: Option<PathBuf>,
 }
 
 impl Review {
@@ -114,6 +118,7 @@ impl Review {
         self.offset = offset;
         self.has_next = false;
         self.selected_group = None;
+        self.keeper = None;
         self.error = None;
         let Some(scan) = &self.scan else {
             self.loading = false;
@@ -157,6 +162,7 @@ impl Review {
     }
 
     fn select_group(&mut self, group_id: u64, cx: &mut Context<Workspace>) {
+        self.keeper = None;
         let Some(scan_id) = self.scan.as_ref().map(|scan| scan.id) else {
             return;
         };
@@ -205,49 +211,52 @@ impl Review {
 
     pub(super) fn render(&self, cx: &Context<Workspace>) -> Div {
         let muted = cx.theme().muted_foreground;
-        let page = div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .gap_3()
-            .p_6()
-            .child(div().text_xl().font_semibold().child("Review"));
+        let page = div().flex().flex_col().size_full().gap_3().p_6().child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_xl().font_semibold().child("Review"))
+                .child(
+                    Button::new("refresh-review")
+                        .small()
+                        .label("Refresh")
+                        .disabled(self.loading || self.scan.is_none())
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            let offset = workspace.review.offset;
+                            workspace.review.load_groups(offset, cx);
+                        })),
+                ),
+        );
         let Some(scan) = &self.scan else {
             return page.child(div().text_sm().text_color(muted).child(
                 "Run a scan, or open one from Scan History, to review its duplicate and similar-image groups.",
             ));
         };
 
-        let (analyzed, explanation) = match self.kind {
-            ReviewKind::ExactDuplicates => (
-                scan.duplicates_analyzed || scan.duplicate_group_count > 0,
-                "Files in each group had byte-identical contents when scanned, verified with SHA-256 and a full comparison. Previews are loaded from the current files.".to_string(),
-            ),
-            ReviewKind::SimilarImages => (
-                scan.similar_images_analyzed || scan.similar_group_count > 0,
+        let explanation = match self.kind {
+            ReviewKind::ExactDuplicates => {
+                "Files in each group had byte-identical contents when scanned, verified with SHA-256 and a full comparison. Previews are loaded from the current files.".to_string()
+            },
+            ReviewKind::SimilarImages => {
                 format!(
                     "Images whose difference hash is within {SIMILAR_IMAGE_DISTANCE} of 64 bits of the group's reference image. This is a heuristic match, not a verified copy. Compare the images before acting.",
-                ),
-            ),
-            ReviewKind::EmptyFolders => (true, "Folders observed with no entries, including hidden entries, when scanned. Excluded or unreadable contents never count as empty. Older scans need rescanning. Nothing is removed.".to_string()),
-            ReviewKind::CleanupCandidates => (
-                true,
-                "Files matching a cleanup rule, judged from the names, sizes, folders, and dates saved with the scan. Candidates are for review only. Nothing is moved or deleted.".to_string(),
-            ),
+                )
+            },
+            ReviewKind::EmptyFolders => "Folders observed with no entries, including hidden entries. Queue eligible folders for a separate confirmation; emptiness is checked again before moving.".to_string(),
+            ReviewKind::CleanupCandidates => {
+                "Metadata candidates need your review. Add eligible items to Cleanup Queue; nothing moves until you confirm the queue. Protected items remain blocked.".to_string()
+            },
         };
         let status = if self.loading {
             Some("Loading…".to_string())
         } else if let Some(error) = &self.error {
             Some(error.clone())
-        } else if !analyzed {
-            Some("This scan has no results for this check. Run a new scan to add them.".into())
         } else if self.groups.is_empty() {
-            Some("No groups found in this scan.".into())
+            Some(status::empty_message(self.kind, scan).into())
         } else {
             None
         };
-        let image_errors = (self.kind == ReviewKind::SimilarImages && scan.image_error_count > 0)
-            .then(|| format!("{} images could not be read.", scan.image_error_count));
 
         let tab = |id: &'static str, label: String, kind: ReviewKind| {
             Button::new(id)
@@ -291,7 +300,10 @@ impl Review {
                 )),
         )
         .child(div().text_sm().text_color(muted).child(explanation))
-        .children(image_errors.map(|text| div().text_sm().text_color(muted).child(text)))
+        .children(
+            status::notice(self.kind, scan)
+                .map(|text| div().text_sm().text_color(muted).child(text)),
+        )
         .children(status.map(|status| div().text_sm().text_color(muted).child(status)))
         .child(
             div()
@@ -395,16 +407,42 @@ impl Review {
                 .flex_1()
                 .min_w(px(0.))
                 .overflow_y_scroll()
-                .children(self.empty_folders.iter().map(|folder| {
-                    let risk = assess_risk(&folder.path, false);
-                    div()
-                        .p_3()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .child(div().text_sm().child(folder.path.display().to_string()))
-                        .child(div().text_xs().child(risk.tier.label()))
-                        .child(div().text_xs().text_color(muted).child(risk.reason))
-                }));
+                .children(
+                    self.empty_folders
+                        .iter()
+                        .enumerate()
+                        .map(|(index, folder)| {
+                            let risk = assess_risk(&folder.path, false);
+                            let path = folder.path.clone();
+                            let scan = self.scan.clone();
+                            div()
+                                .p_3()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(div().text_sm().child(folder.path.display().to_string()))
+                                .child(div().text_xs().child(risk.tier.label()))
+                                .child(div().text_xs().text_color(muted).child(risk.reason))
+                                .child(
+                                    Button::new(("queue-folder", index))
+                                        .small()
+                                        .label("Add to cleanup queue")
+                                        .disabled(
+                                            risk.tier == scan_engine::RiskTier::Protected
+                                                || self.loading,
+                                        )
+                                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                                            if let Some(scan) = &scan {
+                                                workspace.queue_cleanup(
+                                                    scan.clone(),
+                                                    path.clone(),
+                                                    None,
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                )
+                        }),
+                );
         }
         let members: &[Member] = match (self.kind, self.selected_group) {
             (ReviewKind::CleanupCandidates, Some(group_id)) => self
@@ -425,6 +463,12 @@ impl Review {
             .enumerate()
             .map(|(index, member)| {
                 let file = &member.file;
+                let path = file.path.clone();
+                let keep_path = file.path.clone();
+                let scan = self.scan.clone();
+                let keeper = self.keeper.clone();
+                let exact = self.kind == ReviewKind::ExactDuplicates;
+                let actionable = exact || self.kind == ReviewKind::CleanupCandidates;
                 let evidence = &member.evidence;
                 let risk = assess_risk(&file.path, file.read_only);
                 let name = file
@@ -520,6 +564,40 @@ impl Review {
                         } else {
                             row.text_color(muted).child(text)
                         }
+                    }))
+                    .children(exact.then(|| {
+                        Button::new(("keep-duplicate", index))
+                            .small()
+                            .label(if self.keeper.as_ref() == Some(&file.path) {
+                                "Kept copy selected"
+                            } else {
+                                "Keep this copy"
+                            })
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                workspace.review.keeper = Some(keep_path.clone());
+                                cx.notify();
+                            }))
+                    }))
+                    .children(actionable.then(|| {
+                        Button::new(("queue-review-file", index))
+                            .small()
+                            .label("Add to cleanup queue")
+                            .disabled(
+                                self.loading
+                                    || risk.tier == scan_engine::RiskTier::Protected
+                                    || (exact
+                                        && (keeper.is_none() || keeper.as_ref() == Some(&path))),
+                            )
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                if let Some(scan) = &scan {
+                                    workspace.queue_cleanup(
+                                        scan.clone(),
+                                        path.clone(),
+                                        if exact { keeper.clone() } else { None },
+                                        cx,
+                                    );
+                                }
+                            }))
                     }))
             });
 
