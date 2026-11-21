@@ -15,6 +15,7 @@ mod hash_cache;
 mod risk;
 mod scan_scope;
 mod similar_images;
+mod system_files;
 mod volume_space;
 
 pub use cleanup_candidates::{CleanupCandidate, CleanupKind, OLD_DOWNLOAD_DAYS, cleanup_candidate};
@@ -33,6 +34,7 @@ pub use similar_images::{
     SimilarImageGroup, difference_hash, find_similar_images, find_similar_images_with,
     image_preview, is_hashable_image,
 };
+pub use system_files::{SystemFile, SystemFileKind, system_file};
 pub use volume_space::{VolumeSpace, volume_space};
 
 #[derive(Clone, Debug)]

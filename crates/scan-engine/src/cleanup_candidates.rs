@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use crate::system_files::{SystemFileKind, system_file};
 use crate::{FileRecord, app_cache::app_cache_origin};
 
 /// A download untouched for this long when scanned is reported as old.
@@ -113,10 +114,13 @@ pub fn cleanup_candidate(file: &FileRecord, scanned_at: SystemTime) -> Option<Cl
 }
 
 fn temporary_file_origin(name: &str) -> Option<&'static str> {
+    if let Some(file) = system_file(Path::new(name))
+        && file.kind == SystemFileKind::Regenerated
+    {
+        return Some(file.description);
+    }
     let lower = name.to_ascii_lowercase();
     Some(match lower.as_str() {
-        ".ds_store" => "macOS Finder folder settings",
-        "thumbs.db" | "ehthumbs.db" => "a Windows thumbnail cache",
         _ if name.starts_with("~$") => "an Office lock file",
         _ if name.starts_with(".~lock.") => "a LibreOffice lock file",
         _ if lower.ends_with(".tmp") || lower.ends_with(".temp") => "a temporary file",

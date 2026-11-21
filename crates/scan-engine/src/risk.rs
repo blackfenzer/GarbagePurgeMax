@@ -1,12 +1,15 @@
 use std::path::Path;
 
 use crate::app_cache::app_cache_origin;
+use crate::system_files::{SystemFileKind, system_file};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RiskTier {
     Protected,
     High,
     Unknown,
+    /// OS metadata that is recreated automatically, such as `.DS_Store`.
+    Low,
 }
 
 impl RiskTier {
@@ -15,6 +18,7 @@ impl RiskTier {
             Self::Protected => "Protected · cleanup blocked",
             Self::High => "High risk · review carefully",
             Self::Unknown => "Unknown risk · review carefully",
+            Self::Low => "Low risk · recreated by the system",
         }
     }
 }
@@ -73,6 +77,17 @@ pub fn assess_risk(path: &Path, read_only: bool) -> RiskAssessment {
         return RiskAssessment {
             tier: RiskTier::Protected,
             reason,
+        };
+    }
+    // Known OS files outrank folder rules: `.localized` in Documents must stay, while
+    // `.DS_Store` anywhere outside a protected location is only cosmetic state.
+    if let Some(file) = system_file(path) {
+        return RiskAssessment {
+            tier: match file.kind {
+                SystemFileKind::Managed => RiskTier::Protected,
+                SystemFileKind::Regenerated => RiskTier::Low,
+            },
+            reason: file.description,
         };
     }
     let high_risk = if contains(&[
@@ -154,6 +169,18 @@ mod tests {
         assert_eq!(
             assess_risk(Path::new("/Systematic/myfile"), false).tier,
             RiskTier::Unknown
+        );
+        let managed = assess_risk(Path::new("/Users/me/Documents/.localized"), false);
+        assert_eq!(managed.tier, RiskTier::Protected);
+        assert!(managed.reason.contains("display-name"));
+        assert_eq!(
+            assess_risk(Path::new("/Users/me/Documents/.DS_Store"), false).tier,
+            RiskTier::Low
+        );
+        assert_eq!(
+            assess_risk(Path::new("/System/Library/.DS_Store"), false).tier,
+            RiskTier::Protected,
+            "protected locations still win"
         );
     }
 }
