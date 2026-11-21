@@ -147,7 +147,7 @@ impl Workspace {
             return;
         }
         self.scan.error = None;
-        self.page = Page::Overview;
+        self.show_page(Page::Overview);
         self.start_scan(root, cx);
         cx.notify();
     }
@@ -324,7 +324,7 @@ impl Workspace {
                                 });
                                 workspace.scan.report = Some(report);
                                 workspace.overview.load(cx);
-                                workspace.page = Page::Results;
+                                workspace.show_page(Page::Results);
                                 if let Some(saved) = analyze {
                                     // The scan has finished, so this starts once `active` clears.
                                     workspace.scan.active = None;
@@ -334,7 +334,7 @@ impl Workspace {
                             Err(error) => {
                                 workspace.scan.error =
                                     Some(format!("Could not scan folder: {error}"));
-                                workspace.page = Page::Overview;
+                                workspace.show_page(Page::Overview);
                             }
                         }
                         cx.notify();

@@ -6,7 +6,7 @@ use gpui_kit::component::{
     table::{Column, TableDelegate, TableState},
 };
 use gpui_kit::{
-    App, Context, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, px,
+    App, Context, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, img, px,
 };
 use scan_engine::FileRecord;
 use scan_store::DuplicateEvidence;
@@ -16,6 +16,8 @@ use super::SAMPLE_FILES;
 
 struct FileRow {
     name: SharedString,
+    /// The file-type icon's asset path.
+    icon: &'static str,
     search_path: String,
     finding: &'static str,
     size: SharedString,
@@ -31,6 +33,7 @@ impl FileRows {
         let files = SAMPLE_FILES
             .iter()
             .map(|file| FileRow {
+                icon: crate::file_icons::icon_path(std::ffi::OsStr::new(file.name), false),
                 name: file.name.into(),
                 search_path: format!("{}/{}", file.folder, file.name).to_ascii_lowercase(),
                 finding: file.finding,
@@ -59,6 +62,7 @@ impl FileRows {
                     "—"
                 };
                 FileRow {
+                    icon: crate::file_icons::icon_path(name, false),
                     name: name.to_string_lossy().into_owned().into(),
                     search_path: file.path.to_string_lossy().to_ascii_lowercase(),
                     finding,
@@ -133,7 +137,21 @@ impl TableDelegate for FileRows {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        div().text_ellipsis().child(self.cell_text(row, column))
+        let icon = (column == 0)
+            .then(|| self.matches.get(row).map(|&index| self.files[index].icon))
+            .flatten();
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w(px(0.0))
+            .children(icon.map(|icon| img(icon).size(px(16.0)).flex_none()))
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .text_ellipsis()
+                    .child(self.cell_text(row, column)),
+            )
     }
 
     fn cell_label(&self, row: usize, column: usize, _: &App) -> Option<SharedString> {

@@ -311,8 +311,10 @@ impl Results {
             let scan = &saved.scan;
             let mut text = if scan.duplicates_analyzed {
                 format!(
-                    "{} duplicate groups · {} cached hashes reused · {} cache misses",
-                    scan.duplicate_group_count, scan.hash_cache_hits, scan.hash_cache_misses
+                    "{} · {} cached hashes reused · {} cache misses",
+                    super::scan::count(scan.duplicate_group_count, "duplicate group"),
+                    scan.hash_cache_hits,
+                    scan.hash_cache_misses
                 )
             } else if scan.cancelled {
                 format!(
@@ -398,10 +400,11 @@ impl Results {
                     .child(div().text_xl().font_semibold().child("Scan Results"))
                     .child(div().text_sm().text_color(muted).child(summary))
                     .children(root.map(|root| {
+                        // Long scan roots wrap instead of being cut off.
                         div()
                             .text_sm()
                             .text_color(muted)
-                            .text_ellipsis()
+                            .line_clamp(3)
                             .child(root.display().to_string())
                     }))
                     .children(first_error.map(|error| {

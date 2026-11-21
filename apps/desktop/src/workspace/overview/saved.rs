@@ -168,7 +168,7 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
             .small()
             .label("All scan history")
             .on_click(cx.listener(|workspace, _, _, cx| {
-                workspace.page = Page::History;
+                workspace.show_page(Page::History);
                 workspace.history.load(0, cx);
             })),
     )
@@ -187,7 +187,7 @@ fn scan_actions(scan: &SavedScan, can_scan: bool, cx: &Context<Workspace>) -> Di
                 .label("Open results")
                 .on_click(cx.listener(move |workspace, _, _, cx| {
                     workspace.results.open_saved(to_open.clone(), cx);
-                    workspace.page = Page::Results;
+                    workspace.show_page(Page::Results);
                     cx.notify();
                 })),
         )
@@ -200,7 +200,7 @@ fn scan_actions(scan: &SavedScan, can_scan: bool, cx: &Context<Workspace>) -> Di
                     // Keep Review and Results on the same scan for subsequent sidebar navigation.
                     workspace.results.open_saved(to_review.clone(), cx);
                     workspace.review.open(Some(to_review.clone()), cx);
-                    workspace.page = Page::Review;
+                    workspace.show_page(Page::Review);
                     cx.notify();
                 })),
         )

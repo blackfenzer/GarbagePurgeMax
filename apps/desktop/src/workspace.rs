@@ -48,8 +48,10 @@ pub(crate) struct Workspace {
     cleanup: cleanup::Cleanup,
     space_map: space_map::SpaceMap,
     theme: AppTheme,
-    /// The page in Amber Deck's left panel; `page` drives its right panel.
+    /// The pages shown in Amber Deck's left and right panels. `show_page` keeps them in step
+    /// with `page`, so navigation lands in whichever panel hosts the page.
     deck_left: Page,
+    deck_right: Page,
     preferences: preferences::Preferences,
 }
 
@@ -111,6 +113,7 @@ impl Workspace {
             space_map: space_map::SpaceMap::default(),
             theme,
             deck_left: Page::SpaceMap,
+            deck_right: Page::Results,
             preferences: preferences::Preferences::load(),
             page: Page::default(),
             exclusions: exclusions::Exclusions::load(cx),
@@ -161,6 +164,17 @@ impl Workspace {
         change(&mut self.preferences);
         self.preferences.save();
         cx.notify();
+    }
+
+    /// Makes `page` current in both layouts. In Amber Deck it opens in the panel that hosts
+    /// it; Space Map opens as the left panel's map. Call `load_page` too when it needs data.
+    fn show_page(&mut self, page: Page) {
+        self.page = page;
+        if deck::LEFT_TABS.iter().any(|(left, _, _)| *left == page) {
+            self.deck_left = page;
+        } else {
+            self.deck_right = page;
+        }
     }
 
     /// Loads what `page` shows when it is opened.
@@ -234,7 +248,7 @@ impl Workspace {
             .icon(icon)
             .active(self.page == page)
             .on_click(cx.listener(move |workspace, _, _, cx| {
-                workspace.page = page;
+                workspace.show_page(page);
                 workspace.load_page(page, cx);
             }))
     }

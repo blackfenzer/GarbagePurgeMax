@@ -1,42 +1,38 @@
 //! Amber Deck: a top scan bar, two tabbed panels and a footer of graphs,
 //! laid out like a music player's deck instead of a sidebar.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
-
 use super::{Page, Workspace, overview, scan::count};
 
 /// Left panel tabs: the views that explain where space goes.
-const LEFT_TABS: [(Page, &str); 3] = [
-    (Page::SpaceMap, "Map"),
-    (Page::Overview, "Overview"),
-    (Page::Review, "Review"),
+pub(super) const LEFT_TABS: [(Page, &str, IconName); 3] = [
+    (Page::SpaceMap, "Map", IconName::Map),
+    (Page::Overview, "Overview", IconName::LayoutDashboard),
+    (Page::Review, "Review", IconName::Copy),
 ];
-/// Right panel tabs: the lists. `Workspace::page` chooses among these.
-const RIGHT_TABS: [(Page, &str); 5] = [
-    (Page::Results, "Files"),
-    (Page::SpaceMap, "Tree"),
-    (Page::Cleanup, "Queue"),
-    (Page::Recovery, "Recovery"),
-    (Page::History, "History"),
+/// Right panel tabs: the lists.
+const RIGHT_TABS: [(Page, &str, IconName); 5] = [
+    (Page::Results, "Files", IconName::Files),
+    (Page::SpaceMap, "Tree", IconName::ListTree),
+    (Page::Cleanup, "Queue", IconName::Inbox),
+    (Page::Recovery, "Recovery", IconName::ArchiveRestore),
+    (Page::History, "History", IconName::Clock),
 ];
 
 pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     let theme = cx.theme();
-    let right = if RIGHT_TABS.iter().any(|(page, _)| *page == workspace.page) {
-        workspace.page
-    } else {
-        Page::Results
-    };
     div()
         .flex()
         .flex_col()
@@ -58,9 +54,9 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
                                         ),
                                     )
                                     .child(
-                                        resizable_panel()
-                                            .size_range(px(360.0)..px(4000.0))
-                                            .child(panel(workspace, Side::Right, right, cx)),
+                                        resizable_panel().size_range(px(360.0)..px(4000.0)).child(
+                                            panel(workspace, Side::Right, workspace.deck_right, cx),
+                                        ),
                                     ),
                             ),
                         ),
@@ -88,19 +84,20 @@ fn top_bar(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     let saved = workspace.results.saved_scan();
     let control = match &scan.active {
         Some(active) => Button::new("deck-cancel-scan")
-            .small()
+            .icon(Icon::new(IconName::CircleStop))
             .label("Cancel scan")
             .disabled(active.cancelling)
             .on_click(cx.listener(|workspace, _, _, cx| workspace.cancel_scan(cx))),
         None => Button::new("deck-choose-folder")
-            .small()
             .primary()
+            .icon(Icon::new(IconName::FolderOpen))
             .label("Choose folder")
-            .disabled(scan.choosing_folder || workspace.exclusion_settings_busy())
+            .disabled(!workspace.can_start_scan())
             .on_click(cx.listener(|workspace, _, _, cx| workspace.choose_scan_folder(cx))),
     };
     let scan_again = Button::new("deck-scan-again")
-        .small()
+        .outline()
+        .icon(Icon::new(IconName::RotateCcw))
         .label("Scan again")
         .disabled(saved.is_none() || !workspace.can_start_scan())
         .on_click(cx.listener(|workspace, _, _, cx| {
@@ -114,52 +111,68 @@ fn top_bar(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
         .flex_wrap()
         .items_center()
         .gap_3()
-        .px_3()
+        .px_4()
         .py_2()
         .border_b_1()
         .border_color(theme.border)
         .bg(theme.title_bar)
-        .child(div().font_semibold().child("Storage Clinic"))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .font_semibold()
+                .child(Icon::new(IconName::HardDrive).text_color(theme.primary))
+                .child("Storage Clinic"),
+        )
         .child(
             div()
                 .flex()
                 .flex_col()
+                .gap_1()
                 .flex_1()
                 .min_w(px(240.0))
                 .child(div().font_semibold().child(heading))
+                // Long paths wrap onto a second line instead of running off the bar.
                 .child(
                     div()
                         .text_xs()
                         .text_color(theme.muted_foreground)
-                        .text_ellipsis()
+                        .line_clamp(2)
                         .child(description),
                 ),
         );
     if let Some(saved) = saved {
-        bar = bar.child(chip(
-            format!(
-                "{} · {}",
+        bar = bar
+            .child(chip(
+                IconName::Copy,
                 count(saved.duplicate_group_count, "duplicate group"),
-                count(saved.similar_group_count, "similar-image group")
-            ),
-            cx,
-        ));
+                cx,
+            ))
+            .child(chip(
+                IconName::Images,
+                count(saved.similar_group_count, "similar-image group"),
+                cx,
+            ));
     }
     bar.child(control)
         .child(scan_again)
         .child(workspace.theme_buttons(false, cx))
 }
 
-fn chip(text: String, cx: &Context<Workspace>) -> Div {
+fn chip(icon: IconName, text: String, cx: &Context<Workspace>) -> Div {
     let theme = cx.theme();
     div()
+        .flex()
+        .items_center()
+        .gap_1()
         .px_2()
         .py_1()
         .border_1()
         .border_color(theme.border)
-        .rounded(px(3.0))
+        .rounded(px(4.0))
         .text_xs()
-        .text_color(theme.muted_foreground)
+        .child(Icon::new(icon).small().text_color(theme.primary))
         .child(text)
 }
 
@@ -172,26 +185,47 @@ fn panel(workspace: &Workspace, side: Side, current: Page, cx: &Context<Workspac
     let mut strip = div()
         .flex()
         .flex_wrap()
+        .items_end()
         .gap_1()
         .px_2()
-        .py_1()
         .border_b_1()
-        .border_color(theme.border);
-    for (position, (page, label)) in tabs.iter().copied().enumerate() {
+        .border_color(theme.border)
+        .bg(theme.title_bar);
+    for (position, (page, label, icon)) in tabs.iter().cloned().enumerate() {
+        let active = page == current;
         let id = match side {
             Side::Left => ("deck-left-tab", position),
             Side::Right => ("deck-right-tab", position),
         };
+        // The active tab is amber with an underline; others are muted until hovered.
         strip = strip.child(
-            Button::new(id)
-                .small()
-                .ghost()
-                .label(label)
-                .selected(page == current)
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .min_h(px(36.0))
+                .border_b_2()
+                .cursor_pointer()
+                .map(|tab| {
+                    if active {
+                        tab.border_color(theme.primary)
+                            .text_color(theme.primary)
+                            .font_semibold()
+                    } else {
+                        tab.border_color(gpui_kit::transparent_black())
+                            .text_color(theme.muted_foreground)
+                            .hover(|tab| tab.text_color(theme.foreground).bg(theme.secondary))
+                    }
+                })
+                .child(Icon::new(icon).small())
+                .child(label)
                 .on_click(cx.listener(move |workspace, _, _, cx| {
+                    workspace.page = page;
                     match side {
                         Side::Left => workspace.deck_left = page,
-                        Side::Right => workspace.page = page,
+                        Side::Right => workspace.deck_right = page,
                     }
                     workspace.load_page(page, cx);
                 })),
@@ -209,7 +243,7 @@ fn panel(workspace: &Workspace, side: Side, current: Page, cx: &Context<Workspac
         .min_w(px(0.0))
         .border_1()
         .border_color(theme.border)
-        .rounded(px(4.0))
+        .rounded(px(6.0))
         .bg(theme.sidebar)
         .overflow_hidden()
         .child(strip)

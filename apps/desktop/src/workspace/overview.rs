@@ -142,7 +142,7 @@ fn hero_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
             if let Some(report) = &workspace.scan.report {
                 workspace.results.show_scan(report, cx);
             }
-            workspace.page = Page::Results;
+            workspace.show_page(Page::Results);
             cx.notify();
         }));
 
@@ -598,7 +598,7 @@ fn findings_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
             .small()
             .label("Open Review")
             .on_click(cx.listener(|workspace, _, _, cx| {
-                workspace.page = Page::Review;
+                workspace.show_page(Page::Review);
                 workspace.load_page(Page::Review, cx);
             })),
     )

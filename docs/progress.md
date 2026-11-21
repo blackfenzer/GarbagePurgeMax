@@ -1,5 +1,22 @@
 # Development progress
 
+## 2026-11-22 · Colour file-type icons
+
+Bundled 51 SVGs from Material Icon Theme (MIT, licence copied beside them) in `apps/desktop/assets/file-icons`, served by `AppAssets` from `file_icons.rs`. Files map by name (Dockerfile, lockfiles, Git files) or extension (images, video, audio, Office formats, archives, disk images, installers, about 30 languages, configs, fonts, keys, 3D) to an icon, with a generic document icon otherwise and a folder icon for folders. Space Map rows and the Results file list show them. The downloaded SVGs were checked for scripts, event handlers, foreign objects and external links before bundling: none found. Checks: fmt, Clippy (with and without `ui-smoke`), workspace tests, UI smoke run with screenshot review, Windows lint.
+
+## 2026-11-22 · Known system files in risk evidence
+
+Added `scan-engine/src/system_files.rs`, a by-name table of OS-generated files. **Managed** files are now Protected with a specific reason: `.localized` (Finder display name), `desktop.ini`, custom folder and volume icons, Spotlight, FSEvents, per-volume Trash, document revisions, Time Machine markers, Windows paging, hibernation and swap files, registry hives and their logs, Recycle Bin, System Volume Information, boot manager, Linux `lost+found` and `.Trash-*`. **Regenerated** metadata gets a new `RiskTier::Low` ("Low risk · recreated by the system") and appears as a cleanup candidate: `.DS_Store`, `._` AppleDouble files, `Thumbs.db` and variants, KDE `.directory`, `.apdisk`. Protected locations and read-only files still outrank a Low name. Checks: Clippy, **111 tests** and the Windows lint passed.
+
+## 2026-11-22 · Amber Deck design review fixes
+
+- **Navigation bug fixed.** Buttons such as Open Review and View results set the page directly, but Amber Deck panels ignored pages they did not host, so nothing changed. `Workspace::show_page` now routes every navigation to the panel that hosts the page (Map, Overview, Review on the left; Files, Tree, Queue, Recovery, History on the right), and all 11 call sites use it. The UI smoke test checks the routing.
+- **Clear active states and contrast.** Panel tabs are custom: the active tab is amber, bold and underlined; others are muted until hovered. Both themes now give selected buttons a distinct fill (Amber `#6b5210`, Workbench `#4b4380`), lift default buttons off the panel, and strengthen borders.
+- **Icons.** Tabs, top-bar actions, chips, breadcrumbs and Space Map rows (folder or file, tinted by type) use Lucide icons. Seven icons outside GPUI Kit's default bundle are embedded through `apps/desktop/src/assets.rs` (`icon_assets!`), so they no longer render blank.
+- **Long text.** Space Map breadcrumbs show the root and each folder separated by `›`, with the current folder highlighted and the full path wrapping underneath. Scan paths in the top bar, Results header, inspector and footer caption wrap (line clamp) instead of being cut off. "1 duplicate group" is singular.
+
+Checks on macOS 27.2: fmt, Clippy (with and without `ui-smoke`), **110 tests**, the UI smoke test with screenshot review, and the Windows lint all passed. Not verified: hover and pressed states by hand, and both themes at the 900×520 minimum window size.
+
 ## 2026-11-21 · Wider smart scope, cloud placeholders and developer caches
 
 Extended `scan_scope.rs` with the agreed rule set:

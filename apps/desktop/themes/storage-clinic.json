@@ -9,7 +9,7 @@
       "colors": {
         "background": "#171b26",
         "foreground": "#e5eaf4",
-        "border": "#333c4c",
+        "border": "#3a4458",
         "muted.background": "#202634",
         "muted.foreground": "#9ba7bb",
         "accent.background": "#2a3142",
@@ -20,7 +20,7 @@
         "primary.foreground": "#171b26",
         "secondary.background": "#202634",
         "secondary.hover.background": "#2a3142",
-        "secondary.active.background": "#333c4c",
+        "secondary.active.background": "#4b4380",
         "secondary.foreground": "#e5eaf4",
         "input.border": "#333c4c",
         "ring": "#b9abff",
@@ -60,7 +60,11 @@
         "scrollbar.thumb.hover.background": "#5b667c",
         "link.foreground": "#b9abff",
         "link.hover.foreground": "#d6ceff",
-        "window.border": "#333c4c"
+        "window.border": "#333c4c",
+        "button.background": "#262d3d",
+        "button.hover.background": "#2f3749",
+        "button.active.background": "#4b4380",
+        "button.foreground": "#e5eaf4"
       }
     },
     {
@@ -70,7 +74,7 @@
       "colors": {
         "background": "#0d0d0c",
         "foreground": "#ece6d8",
-        "border": "#272622",
+        "border": "#3a372f",
         "muted.background": "#1f1e1a",
         "muted.foreground": "#b3ab99",
         "accent.background": "#2b2414",
@@ -79,11 +83,11 @@
         "primary.hover.background": "#ffc52e",
         "primary.active.background": "#d99e00",
         "primary.foreground": "#151513",
-        "secondary.background": "#1f1e1a",
-        "secondary.hover.background": "#2a2924",
-        "secondary.active.background": "#33312b",
+        "secondary.background": "#24221d",
+        "secondary.hover.background": "#302d26",
+        "secondary.active.background": "#6b5210",
         "secondary.foreground": "#ece6d8",
-        "input.border": "#33312b",
+        "input.border": "#4a463c",
         "ring": "#f5b301",
         "selection.background": "#6b5310",
         "popover.background": "#151513",
@@ -102,7 +106,7 @@
         "table.hover.background": "#1f1e1a",
         "sidebar.background": "#151513",
         "sidebar.foreground": "#ece6d8",
-        "sidebar.border": "#272622",
+        "sidebar.border": "#3a372f",
         "sidebar.accent.background": "#3a3018",
         "sidebar.accent.foreground": "#ece6d8",
         "sidebar.primary.background": "#f5b301",
@@ -114,14 +118,18 @@
         "progress_bar.background": "#f5b301",
         "slider.bar.background": "#f5b301",
         "title_bar.background": "#151513",
-        "title_bar.border": "#272622",
+        "title_bar.border": "#3a372f",
         "status_bar.background": "#151513",
         "status_bar.border": "#272622",
         "scrollbar.thumb.background": "#4a4740e6",
         "scrollbar.thumb.hover.background": "#5c584f",
         "link.foreground": "#f5b301",
         "link.hover.foreground": "#ffd25c",
-        "window.border": "#272622"
+        "window.border": "#272622",
+        "button.background": "#24221d",
+        "button.hover.background": "#302d26",
+        "button.active.background": "#6b5210",
+        "button.foreground": "#ece6d8"
       }
     }
   ]

@@ -95,3 +95,5 @@ See [the release checklist](docs/release.md) for exact checks, disposable cleanu
 ## Layout design studies
 
 Open [the five-layout website](design-lab/dist/index.html) directly in a browser to compare Workbench, Harbor, Atlas, Focus and Ledger. All interactions use sample data. Workbench is the initial direction for dense analysis; each alternative changes the workspace structure. [Design notes and references](design-lab/DESIGN.md) explain the tradeoffs. The native application layout is unchanged.
+
+File-type icons are from [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme) (MIT); the licence is in `apps/desktop/assets/file-icons/LICENSE-material-icon-theme`. Interface icons are Lucide, via GPUI Kit.

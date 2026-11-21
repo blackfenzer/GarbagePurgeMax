@@ -3,14 +3,16 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, button::Button,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _,
+    button::{Button, ButtonVariants as _},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Task, div, px, relative,
+    StatefulInteractiveElement as _, Styled as _, Task, div, img, px, relative,
 };
 use scan_store::{FolderEntry, FolderSummary, SavedScan};
 
@@ -356,7 +358,7 @@ impl SpaceMap {
                     .border_color(theme.border)
                     .text_sm()
                     .text_center()
-                    .text_ellipsis()
+                    .line_clamp(2)
                     .child(caption),
             )
     }
@@ -434,7 +436,10 @@ impl SpaceMap {
         }
     }
 
+    /// Drill-down path: the scan root, then each folder below it, separated by `›`.
+    /// The full path wraps underneath so long names stay readable.
     fn breadcrumbs(&self, scan: &SavedScan, cx: &Context<Workspace>) -> Div {
+        let theme = cx.theme();
         let mut folders: Vec<&Path> = self
             .folder
             .ancestors()
@@ -444,26 +449,57 @@ impl SpaceMap {
         let last = folders.len().saturating_sub(1);
         let mut crumbs = div().flex().flex_wrap().items_center().gap_1();
         for (position, folder) in folders.into_iter().enumerate() {
-            let label = if position == 0 {
-                folder.display().to_string()
+            let label = folder.file_name().map_or_else(
+                || folder.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let icon = if position == 0 {
+                IconName::HardDrive
             } else {
-                folder
-                    .file_name()
-                    .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+                IconName::Folder
             };
-            let target = folder.to_path_buf();
-            crumbs = crumbs.child(
+            if position > 0 {
+                crumbs = crumbs.child(
+                    Icon::new(IconName::ChevronRight)
+                        .small()
+                        .text_color(theme.muted_foreground),
+                );
+            }
+            crumbs = crumbs.child(if position == last {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .bg(theme.secondary)
+                    .text_color(theme.primary)
+                    .font_semibold()
+                    .child(Icon::new(icon).small())
+                    .child(label)
+                    .into_any_element()
+            } else {
+                let target = folder.to_path_buf();
                 Button::new(("space-map-crumb", position))
                     .small()
+                    .ghost()
+                    .icon(Icon::new(icon))
                     .label(label)
-                    .selected(position == last)
                     .disabled(self.loading)
                     .on_click(cx.listener(move |workspace, _, _, cx| {
                         workspace.space_map.open_folder(target.clone(), cx);
-                    })),
-            );
+                    }))
+                    .into_any_element()
+            });
         }
-        crumbs
+        div().flex().flex_col().gap_1().child(crumbs).child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .line_clamp(2)
+                .child(self.folder.display().to_string()),
+        )
     }
 
     fn size_list(&self, summary: &FolderSummary, cx: &Context<Workspace>) -> impl IntoElement {
@@ -513,7 +549,11 @@ impl SpaceMap {
                             .gap_2()
                             .flex_1()
                             .min_w(px(0.0))
-                            .child(div().size(px(10.0)).bg(type_color(entry.main_type)))
+                            .child(
+                                img(crate::file_icons::icon_path(&entry.name, entry.is_folder))
+                                    .size(px(16.0))
+                                    .flex_none(),
+                            )
                             .child(
                                 div()
                                     .text_ellipsis()
@@ -695,7 +735,7 @@ impl SpaceMap {
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .text_ellipsis()
+                    .line_clamp(3)
                     .child(path.display().to_string()),
             )
             .child(

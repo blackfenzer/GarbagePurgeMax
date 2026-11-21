@@ -40,7 +40,7 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
 
     let platform = gpui_kit::platform::current_platform(false);
     let mut cx =
-        VisualTestAppContext::with_asset_source(platform, Arc::new(gpui_kit::assets::Assets));
+        VisualTestAppContext::with_asset_source(platform, Arc::new(crate::assets::AppAssets));
     cx.update(gpui_kit::init);
     let window: WindowHandle<Workspace> = cx
         .open_offscreen_window(size(px(1280.0), px(820.0)), |window, cx| {
@@ -107,8 +107,7 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
         })?;
         for (page, name) in PAGES {
             window.update(&mut cx, |workspace, _, cx| {
-                workspace.page = page;
-                workspace.deck_left = Page::SpaceMap;
+                workspace.show_page(page);
                 workspace.load_page(page, cx);
             })?;
             settle(&mut cx);
@@ -116,6 +115,23 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
             capture(&mut cx, window.into(), &file)?;
         }
     }
+
+    // Buttons that open another page land in the Amber Deck panel that hosts it.
+    let routed = window.update(&mut cx, |workspace, _, _| {
+        workspace.show_page(Page::Review);
+        let review = workspace.deck_left;
+        workspace.show_page(Page::Results);
+        (review, workspace.deck_right, workspace.deck_left)
+    })?;
+    ensure(
+        routed == (Page::Review, Page::Results, Page::Review),
+        "Review opens on the left and Results on the right",
+    )?;
+    window.update(&mut cx, |workspace, _, cx| {
+        workspace.show_page(Page::SpaceMap);
+        workspace.load_page(Page::SpaceMap, cx);
+    })?;
+    settle(&mut cx);
 
     // Space Map totals the scan, lists the largest folder first and opens it on request.
     let (map_scan, first, folder) = window.update(&mut cx, |workspace, _, cx| {

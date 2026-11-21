@@ -1,5 +1,12 @@
 # Changelog
 
+## Amber Deck design review — 2026-11-22
+
+- Added colour file-type icons from Material Icon Theme (MIT) to Space Map and the Results file list.
+- Risk evidence now recognises OS-generated files: `.localized`, `desktop.ini`, Spotlight and Time Machine data, paging files and registry hives are Protected; `.DS_Store`, AppleDouble `._` files and thumbnail caches are a new Low-risk tier and cleanup candidates.
+- Fixed buttons that open another page doing nothing in Amber Deck.
+- Clearer active tabs and selected buttons, stronger borders, icons throughout, `›` breadcrumbs in Space Map, and wrapping long paths.
+
 ## Smart scope and background analysis — 2026-11-21
 
 - Smart scope also skips web, mobile, Ruby, Elixir, Haskell, Zig, CMake and game-engine (Unity, Unreal, Godot) generated folders; analysis never reads online-only cloud files, disk images, device backups, Photos libraries, Wine prefixes or more game data.

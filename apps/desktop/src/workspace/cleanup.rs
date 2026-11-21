@@ -215,7 +215,7 @@ impl Workspace {
         {
             return;
         }
-        self.page = Page::Cleanup;
+        self.show_page(Page::Cleanup);
         self.cleanup.busy = true;
         self.cleanup.confirm = false;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -292,7 +292,7 @@ impl Workspace {
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {
-                workspace.page = Page::Recovery;
+                workspace.show_page(Page::Recovery);
                 workspace.finish_cleanup(result, cx);
             });
         }));

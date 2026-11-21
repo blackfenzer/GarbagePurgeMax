@@ -120,7 +120,7 @@ impl History {
                                 .small()
                                 .on_click(cx.listener(move |workspace, _, _, cx| {
                                     workspace.results.open_saved(scan_to_open.clone(), cx);
-                                    workspace.page = Page::Results;
+                                    workspace.show_page(Page::Results);
                                     cx.notify();
                                 })),
                         ),

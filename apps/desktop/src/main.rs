@@ -1,3 +1,5 @@
+mod assets;
+mod file_icons;
 mod workspace;
 
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
@@ -22,7 +24,7 @@ fn main() {
     }
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(assets::AppAssets)
         .run(|cx| {
             gpui_kit::init(cx);
             // Single-window app: without this, closing the window leaves the process running,
