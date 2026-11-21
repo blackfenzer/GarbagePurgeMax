@@ -181,3 +181,13 @@ The fixture writes 20,000 separate files of 4 KiB in one directory. Half are byt
 | 3 | 1.037 s | 7.93 ms | 0.849 s |
 
 Peak process RSS was 26,800 KiB; whole-process CPU was 0.50 s user / 4.42 s system. This establishes behavior for the tested 20,000-member bucket, not a general memory ceiling: candidates and image records still scale with input size. Large photo libraries, adversarial hash collisions, cold-cache/device-I/O tracing, and GUI frame timing need separate measurements. The storage-failure cleanup of retained image records does not affect these successful-save measurements.
+
+## Space Map folder totals
+
+Synthetic 1,000,000-file scan (20 top-level folders × 400 subfolders), release build, macOS 27.2 on Apple Silicon. Run with `cargo test --release --locked -p scan-store --test store folder_summary_speed -- --ignored --nocapture`.
+
+| Folder opened | Files beneath | Time |
+| --- | --- | --- |
+| Scan root | 1,000,000 | 350 ms |
+| Top-level folder | 50,000 | 19 ms |
+| Leaf folder | 2,500 | 1.2 ms |

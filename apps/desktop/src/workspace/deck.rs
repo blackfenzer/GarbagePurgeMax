@@ -6,7 +6,10 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
 };
-use gpui_kit::{AnyElement, Context, Div, IntoElement, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{
+    AnyElement, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
+    StatefulInteractiveElement as _, Styled as _, div, px,
+};
 
 use super::{Page, Workspace, overview};
 
@@ -115,8 +118,9 @@ fn top_bar(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     if let Some(saved) = saved {
         bar = bar.child(chip(
             format!(
-                "{} duplicate groups · {} similar-image groups",
-                saved.duplicate_group_count, saved.similar_group_count
+                "{} · {}",
+                count(saved.duplicate_group_count, "duplicate group"),
+                count(saved.similar_group_count, "similar-image group")
             ),
             cx,
         ));
@@ -124,6 +128,14 @@ fn top_bar(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     bar.child(control)
         .child(scan_again)
         .child(workspace.theme_buttons(false, cx))
+}
+
+fn count(number: u64, noun: &str) -> String {
+    if number == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{number} {noun}s")
+    }
 }
 
 fn chip(text: String, cx: &Context<Workspace>) -> Div {
@@ -189,5 +201,15 @@ fn panel(workspace: &Workspace, side: Side, current: Page, cx: &Context<Workspac
         .bg(theme.sidebar)
         .overflow_hidden()
         .child(strip)
-        .child(div().flex_1().min_h(px(0.0)).child(body))
+        .child(match side {
+            // The map and its inspector can be taller than the panel; list pages scroll themselves.
+            Side::Left => div()
+                .id("deck-left-body")
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .child(body)
+                .into_any_element(),
+            Side::Right => div().flex_1().min_h(px(0.0)).child(body).into_any_element(),
+        })
 }

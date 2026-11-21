@@ -3,7 +3,13 @@ use std::{fs, io};
 
 use scan_store::ScanStore;
 
+/// Keeps all app data (scans, exclusions, theme) in another folder, for tests and trial runs.
+const DATA_DIR_OVERRIDE: &str = "STORAGE_CLINIC_DATA_DIR";
+
 pub(super) fn database_path() -> io::Result<PathBuf> {
+    if let Some(data) = std::env::var_os(DATA_DIR_OVERRIDE).filter(|data| !data.is_empty()) {
+        return Ok(PathBuf::from(data).join("scans.sqlite3"));
+    }
     dirs::data_local_dir()
         .map(|dir| dir.join("Storage Clinic").join("scans.sqlite3"))
         .ok_or_else(|| io::Error::other("could not find the app data directory"))

@@ -14,6 +14,18 @@ scan-engine = { path = "../../crates/scan-engine" }
 scan-store = { path = "../../crates/scan-store" }
 cleanup-engine = { path = "../../crates/cleanup-engine" }
 tempfile = "3"
+# Only with `ui-smoke`: off-screen windows and screenshots, plus fixture images.
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.12", features = ["test-support"], optional = true }
+
+[features]
+# Lets the app binary run its off-screen UI smoke test; see tests/ui_smoke.rs.
+ui-smoke = ["dep:gpui", "dep:gpui_platform", "dep:image"]
+
+[[test]]
+name = "ui_smoke"
+required-features = ["ui-smoke"]
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }

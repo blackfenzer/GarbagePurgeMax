@@ -584,8 +584,8 @@ impl ScanStore {
 
     /// Totals the direct children of `folder` from saved native paths, for the Space Map.
     /// Cancelled scans cover the indexed part.
-    // ponytail: reads every file row per call, like `file_types`; save per-folder totals
-    // during the scan if large scans make navigation slow.
+    // ponytail: reads every file row beneath `folder` per call (about 0.3 s at the root of a
+    // 1M-file scan in a release build); save per-folder totals during the scan if that grows.
     pub fn folder_summary(&self, scan_id: i64, folder: &Path) -> rusqlite::Result<FolderSummary> {
         #[derive(Default)]
         struct ChildTotals {
@@ -597,10 +597,19 @@ impl ScanStore {
 
         let mut children: HashMap<OsString, ChildTotals> = HashMap::new();
         let mut types: HashMap<&'static str, FileTypeTotal> = HashMap::new();
-        let mut statement = self
-            .0
-            .prepare_cached("SELECT path_key, logical_bytes FROM files WHERE scan_id = ?1")?;
-        let mut rows = statement.query([scan_id])?;
+        // Every path beneath `folder` starts with its encoded form plus a separator, so a key
+        // range on the primary key reads only those rows. The separator's last encoded byte is
+        // never 0xFF, so incrementing it gives the exclusive upper bound.
+        let lower = encode_path(&folder.join(""));
+        let mut upper = lower.clone();
+        if let Some(last) = upper.last_mut() {
+            *last += 1;
+        }
+        let mut statement = self.0.prepare_cached(
+            "SELECT path_key, logical_bytes FROM files
+             WHERE scan_id = ?1 AND path_key >= ?2 AND path_key < ?3",
+        )?;
+        let mut rows = statement.query(params![scan_id, lower, upper])?;
         while let Some(row) = rows.next()? {
             let path = decode_path(row, 0)?;
             let Ok(inside) = path.strip_prefix(folder) else {

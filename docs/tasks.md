@@ -99,6 +99,8 @@ Current hardening includes bounded thumbnails and candidate previews, decoder li
 - [x] Verify completed package manifests, SHA-256 payload hashes, layout, architecture, and launch metadata before atomic replacement. Configure CI to upload development ZIPs after checks pass. Local archive and 14 packaging tests pass; remote artifact production still needs a workflow run.
 - [x] Add a Space Map page (WizTree-style folder sizes, treemap, inspector) and a saved Workbench / Amber Deck theme choice, from the [Space Map design](https://claude.ai/artifact/TxcKwHdjUeTQtyE3YqUPv2). Folder totals and treemap layout have tests; visual review of both themes remains pending.
 - [x] Build the Amber Deck layout: top scan bar, tabbed left/right panels, and footer graphs (size by modified year, folder size strip, mini treemap, caption). Visual review remains pending.
+- [x] Add an off-screen UI smoke test that scans a synthetic folder, opens every page in both themes, checks Space Map navigation, and saves screenshots for review (`--features ui-smoke --test ui_smoke`). macOS only; not yet in CI.
+- [ ] Run the UI smoke test in macOS CI once GitHub runners are confirmed to render with Metal, and drive it with simulated clicks instead of direct method calls.
 - [ ] Sign, notarize where applicable, and define the release and update process. Publish release builds, support docs, architecture diagram, reproducible benchmark results, screenshots, and a short demo.
 - [ ] Evaluate deeper archive previews and workspace customization against user evidence. Keep analysis local and require opt-in for any future telemetry.
 

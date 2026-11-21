@@ -28,11 +28,7 @@ impl Snapshot {
 
 /// Rejects links/reparse points in every existing ancestor, relative paths and parent traversal.
 pub fn validate_ancestors(path: &Path) -> io::Result<()> {
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
-    {
+    if !path.is_absolute() || has_traversal(path) {
         return Err(io::Error::other(
             "Cleanup requires an absolute path without parent traversal",
         ));
@@ -46,6 +42,22 @@ pub fn validate_ancestors(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn has_traversal(path: &Path) -> bool {
+    let parsed = path
+        .components()
+        .any(|part| matches!(part, Component::ParentDir | Component::CurDir));
+    // Verbatim paths (`\\?\C:\…`, as `canonicalize` returns on Windows) keep `..` and `/`
+    // inside ordinary components, so check each segment of the raw text as well.
+    #[cfg(windows)]
+    let parsed = parsed
+        || path
+            .as_os_str()
+            .as_encoded_bytes()
+            .split(|byte| matches!(byte, b'/' | b'\\'))
+            .any(|segment| segment == b".." || segment == b".");
+    parsed
 }
 
 pub fn inspect(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> {

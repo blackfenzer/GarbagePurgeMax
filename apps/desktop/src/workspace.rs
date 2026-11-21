@@ -9,6 +9,8 @@ mod scan;
 mod space_map;
 mod storage;
 mod theme;
+#[cfg(feature = "ui-smoke")]
+pub(crate) mod ui_smoke;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{

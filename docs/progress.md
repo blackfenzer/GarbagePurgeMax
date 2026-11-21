@@ -1,5 +1,26 @@
 # Development progress
 
+## 2026-11-21 · Headless UI smoke test and faster folder totals
+
+**UI smoke test.** `cargo test --locked -p storage-clinic --features ui-smoke --test ui_smoke` starts the app binary in an off-screen window (GPUI `VisualTestAppContext` with the real macOS platform), scans a synthetic home folder, opens all seven pages in both themes, checks Space Map totals and folder navigation plus the footer's year data, and saves 15 screenshots to `target/ui-smoke/`. Rendering goes to a Metal texture, so no screen recording permission is needed. The binary runs the check itself because macOS requires the platform on the main thread, which libtest does not give tests. The `ui-smoke` feature is off in normal builds; `STORAGE_CLINIC_DATA_DIR` (new, also useful for trial runs) keeps the run away from real app data, and the run refuses to start without it.
+
+Reviewing the screenshots found and fixed three Amber Deck issues: the left Map panel's treemap collapsed to zero height (now `flex_shrink_0`), a single modified year stretched across the whole chart (bars capped at 48 px), and the footer took so much height that the Files table was hidden (now one compact row, and the left panel scrolls). The status chip now pluralises correctly.
+
+**Folder totals.** Space Map now reads only the rows beneath the opened folder with a primary-key range on the stored path bytes. On 1,000,000 synthetic files in a release build: root 0.35 s (all rows), top-level folder 198 → 19 ms, leaf folder 191 → 1.2 ms. A name-prefix sibling (`Moviesx.txt` beside `Movies`) is covered by the folder totals test.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
+| `cargo clippy --locked -p storage-clinic --all-targets --features ui-smoke -- -D warnings` | Passed |
+| `cargo test --locked --workspace` | **101 passed**, 0 failed, 7 ignored (new ignored: 1M-file folder totals benchmark) |
+| `cargo test --locked -p storage-clinic --features ui-smoke --test ui_smoke` | Passed in 17 s; 15 screenshots reviewed |
+| `sh .github/scripts/clippy-windows.sh` | Passed |
+
+**Windows CI test failure (from the pasted job log).** `directories_must_stay_empty_and_paths_must_be_absolute` failed on Windows: `canonicalize` returns verbatim `\\?\C:\…` paths, whose components keep `..` and `/` inside ordinary names, so `validate_ancestors` accepted `…\empty\../empty`. On Windows it now also rejects any raw `.` or `..` segment split on `/` or `\`. Verified only by macOS tests and the Windows lint; Windows CI must confirm, and `cargo test` stops at the first failing test target, so later Windows targets have not run since `7c4352d`.
+
+**Still not covered:** clicks are driven through workspace methods, not simulated pointer events; the real Trash and restore round trip; Windows rendering and acceptance; keyboard and screen reader checks. The UI smoke test is not in CI yet: GitHub's macOS runners' Metal support needs a trial run.
+
 ## 2026-11-21 · Amber Deck layout
 
 Choosing **Amber Deck** now switches the whole window to the rox-style layout from the canvas design instead of recolouring the sidebar layout. A top bar shows the scan status, duplicate and similar-image counts, Choose folder / Cancel scan, Scan again and the theme switch. The left panel switches between Map (treemap + inspector), Overview and Review; the right panel between Files (Scan Results), Tree (Space Map list), Queue, Recovery and History. Every panel reuses the existing page renderer, so behaviour matches Workbench. The footer graphs show logical size by UTC last-modified year (`ScanStore::modified_years`), a clickable strip of the open folder's entries by size, a small treemap, and a caption for the selection. Space Map follows the scan open in Scan Results while Amber Deck is shown.

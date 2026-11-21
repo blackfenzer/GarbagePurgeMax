@@ -9,6 +9,18 @@ fn main() {
     )
     .init();
 
+    // `tests/ui_smoke.rs` starts the binary this way: the macOS platform must be created on
+    // the main thread, which the test harness cannot offer.
+    #[cfg(feature = "ui-smoke")]
+    if let Some(shots) = std::env::var_os("STORAGE_CLINIC_UI_SMOKE") {
+        if let Err(error) = workspace::ui_smoke::run(std::path::Path::new(&shots)) {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        println!("UI smoke run passed");
+        return;
+    }
+
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {

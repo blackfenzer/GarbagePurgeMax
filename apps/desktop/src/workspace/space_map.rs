@@ -27,15 +27,15 @@ const TREEMAP_HEIGHT: f32 = 320.0;
 #[derive(Default)]
 pub(super) struct SpaceMap {
     scan: Option<SavedScan>,
-    folder: PathBuf,
-    summary: Option<FolderSummary>,
+    pub(super) folder: PathBuf,
+    pub(super) summary: Option<FolderSummary>,
     /// Position in `summary.entries` shown in the inspector.
     selected: Option<usize>,
     loading: bool,
     error: Option<String>,
     request: Option<Task<()>>,
     /// Logical bytes by last-modified year for the whole scan, for the Amber Deck footer.
-    years: Vec<(i32, u64)>,
+    pub(super) years: Vec<(i32, u64)>,
     years_request: Option<Task<()>>,
 }
 
@@ -130,7 +130,7 @@ impl SpaceMap {
     }
 
     /// Opens a folder entry, or shows a file entry in the inspector.
-    fn choose(&mut self, index: usize, cx: &mut Context<Workspace>) {
+    pub(super) fn choose(&mut self, index: usize, cx: &mut Context<Workspace>) {
         let Some(entry) = self
             .summary
             .as_ref()
@@ -238,7 +238,7 @@ impl SpaceMap {
             .map(|(_, bytes)| *bytes)
             .max()
             .unwrap_or(1);
-        let mut years = div().flex().items_end().gap_1().h(px(72.0));
+        let mut years = div().flex().items_end().gap_1().h(px(64.0));
         for (year, bytes) in self.years.iter().rev().take(16).rev() {
             years = years.child(
                 div()
@@ -247,12 +247,13 @@ impl SpaceMap {
                     .items_center()
                     .justify_end()
                     .flex_1()
+                    .max_w(px(48.0))
                     .h_full()
                     .gap_1()
                     .child(
                         div()
                             .w_full()
-                            .h(px(54.0 * fraction(*bytes, largest_year)).max(px(2.0)))
+                            .h(px(46.0 * fraction(*bytes, largest_year)).max(px(2.0)))
                             .bg(theme.primary),
                     )
                     .child(
@@ -264,7 +265,7 @@ impl SpaceMap {
             );
         }
 
-        let mut strip = div().flex().items_end().gap(px(2.0)).h(px(72.0));
+        let mut strip = div().flex().items_end().gap(px(2.0)).h(px(64.0));
         if let Some(summary) = summary {
             let largest = summary.entries[0].logical_bytes.max(1);
             for (index, entry) in summary.entries.iter().take(MAX_BLOCKS).enumerate() {
@@ -304,8 +305,20 @@ impl SpaceMap {
             .child(
                 div()
                     .flex()
+                    .items_end()
                     .gap_4()
-                    .p_3()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .w(px(300.0))
+                            .flex_shrink_0()
+                            .child(label("Size by last-modified year (UTC)"))
+                            .child(years),
+                    )
                     .child(
                         div()
                             .flex()
@@ -313,22 +326,21 @@ impl SpaceMap {
                             .gap_1()
                             .flex_1()
                             .min_w(px(0.0))
-                            .child(label("Size by last-modified year (UTC)"))
-                            .child(years)
                             .child(label("This folder's entries by size · click to open"))
                             .child(strip),
                     )
                     .when_some(summary, |row, summary| {
                         row.child(
                             div()
-                                .w(px(220.0))
+                                .w(px(160.0))
+                                .flex_shrink_0()
                                 .border_2()
                                 .border_color(theme.primary)
                                 .child(self.treemap(
                                     "space-map-mini-block",
                                     summary,
-                                    220.0,
-                                    150.0,
+                                    160.0,
+                                    80.0,
                                     cx,
                                 )),
                         )
@@ -586,6 +598,8 @@ impl SpaceMap {
             .relative()
             .w_full()
             .h(px(height))
+            // Keep its height inside a crowded column instead of shrinking away.
+            .flex_shrink_0()
             .bg(theme.muted)
             .overflow_hidden();
         for block in treemap(&sizes, width / height) {

@@ -347,10 +347,12 @@ fn totals_each_folder_level_for_the_space_map() -> Result<(), Box<dyn std::error
         ("Movies/Old/clip.mp4", 8),
         ("notes.txt", 5),
         ("Pictures/a.png", 12),
+        // Shares a name prefix with Movies but is not inside it.
+        ("Moviesx.txt", 1),
     ] {
         writer.insert_file(&file(root.join(path).to_str().unwrap(), bytes))?;
     }
-    let scan = writer.finish(&summary(5, false), 0)?;
+    let scan = writer.finish(&summary(6, false), 0)?;
     let entry = |name: &str, is_folder, files, logical_bytes, main_type| FolderEntry {
         name: name.into(),
         is_folder,
@@ -360,13 +362,14 @@ fn totals_each_folder_level_for_the_space_map() -> Result<(), Box<dyn std::error
     };
 
     let top = store.folder_summary(scan.id, &root)?;
-    assert_eq!((top.files, top.logical_bytes), (5, 57));
+    assert_eq!((top.files, top.logical_bytes), (6, 58));
     assert_eq!(
         top.entries,
         [
             entry("Movies", true, 3, 40, "Video"),
             entry("Pictures", true, 1, 12, "Images"),
             entry("notes.txt", false, 1, 5, "Documents"),
+            entry("Moviesx.txt", false, 1, 1, "Documents"),
         ]
     );
     assert_eq!(top.types[0].file_type, "Video");
@@ -849,5 +852,44 @@ fn partial_scans_retain_analysis_error_counts() -> Result<(), Box<dyn std::error
     assert_eq!(saved.duplicate_error_count, 2);
     assert_eq!(saved.image_error_count, 3);
     assert!(!saved.duplicates_analyzed && !saved.similar_images_analyzed);
+    Ok(())
+}
+
+#[test]
+#[ignore = "benchmark: cargo test --release -p scan-store --test store folder_summary_speed -- --ignored --nocapture"]
+fn folder_summary_speed_on_a_million_files() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root");
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(&root, 1 << 30)?;
+    let started = std::time::Instant::now();
+    let files = 1_000_000u64;
+    for index in 0..files {
+        let path = root
+            .join(format!("top-{}", index % 20))
+            .join(format!("middle-{}", index % 400))
+            .join(format!("file-{index}.bin"));
+        writer.insert_file(&file(path.to_str().unwrap(), index % 4096))?;
+    }
+    let scan = writer.finish(&summary(files, false), 0)?;
+    println!("insert {files} files: {:?}", started.elapsed());
+
+    for (label, folder) in [
+        ("root", root.clone()),
+        ("top folder", root.join("top-3")),
+        ("leaf folder", root.join("top-3").join("middle-23")),
+    ] {
+        let started = std::time::Instant::now();
+        let totals = store.folder_summary(scan.id, &folder)?;
+        println!(
+            "folder_summary {label}: {:?} ({} entries, {} files)",
+            started.elapsed(),
+            totals.entries.len(),
+            totals.files
+        );
+    }
+    let started = std::time::Instant::now();
+    store.file_types(scan.id)?;
+    println!("file_types: {:?}", started.elapsed());
     Ok(())
 }

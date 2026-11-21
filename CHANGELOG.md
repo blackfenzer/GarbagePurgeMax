@@ -5,6 +5,9 @@
 - Added Space Map: a saved scan's folders by logical size with % of folder, file counts, main file type, a squarified treemap, breadcrumbs and an inspector. It reads saved paths only and moves nothing.
 - Added the Amber Deck layout: a top scan bar with Choose folder / Cancel, Scan again and the theme switch; a left panel (Map, Overview, Review) and a right panel (Files, Tree, Queue, Recovery, History); and a footer with size by last-modified year, a clickable strip of the current folder's entries, a small treemap and a caption.
 - Added a sidebar theme switch between Workbench (dark slate and lavender) and Amber Deck (near-black and amber). The choice is saved next to the scan database.
+- Added an off-screen UI smoke test with screenshots, and `STORAGE_CLINIC_DATA_DIR` to keep app data in another folder.
+- Space Map totals subfolders from a path-key range: 19 ms instead of 198 ms for a top-level folder of a 1M-file scan.
+- Fixed Amber Deck's collapsed Map treemap, oversized footer and year bars, and the chip's plural.
 - Fixed two Windows-only Clippy errors that had failed Windows CI since `7c4352d`, and added `.github/scripts/clippy-windows.sh` to lint Windows code from macOS.
 
 ## Design study — 2026-11-18
