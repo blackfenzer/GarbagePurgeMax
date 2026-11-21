@@ -13,6 +13,7 @@ mod file_types;
 mod file_version;
 mod hash_cache;
 mod risk;
+mod scan_scope;
 mod similar_images;
 mod volume_space;
 
@@ -23,9 +24,11 @@ pub use duplicates::{
 pub use file_types::{FILE_TYPES, OTHER_FILE_TYPE, file_type};
 pub use hash_cache::{HashCache, HashStage};
 pub use risk::{RiskAssessment, RiskTier, assess_risk};
+pub use scan_scope::{ScanScope, analysis_exemption, inside_git_project, project_internals};
 pub use similar_images::{
-    SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis, SimilarImageGroup, difference_hash,
-    find_similar_images, image_preview, is_hashable_image,
+    DEFAULT_IMAGE_WORKERS, SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis,
+    SimilarImageGroup, difference_hash, find_similar_images, find_similar_images_with,
+    image_preview, is_hashable_image,
 };
 pub use volume_space::{VolumeSpace, volume_space};
 
@@ -49,6 +52,11 @@ pub struct DirectoryRecord {
 pub enum ScanEntry {
     File(FileRecord),
     Directory(DirectoryRecord),
+    /// A folder a smart scan left unindexed, with the reason.
+    ScopedOut {
+        path: PathBuf,
+        reason: &'static str,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,9 +101,22 @@ pub fn scan_entries(
     root: &Path,
     exclusions: &[PathBuf],
     cancelled: &AtomicBool,
+    visit: impl FnMut(ScanProgress, Option<ScanEntry>),
+) -> io::Result<ScanSummary> {
+    scan_entries_with_scope(root, exclusions, ScanScope::Everything, cancelled, visit)
+}
+
+/// Like `scan_entries`, but a smart scope leaves regenerable project folders unindexed
+/// and reports each one as `ScanEntry::ScopedOut`.
+pub fn scan_entries_with_scope(
+    root: &Path,
+    exclusions: &[PathBuf],
+    scope: ScanScope,
+    cancelled: &AtomicBool,
     mut visit: impl FnMut(ScanProgress, Option<ScanEntry>),
 ) -> io::Result<ScanSummary> {
     let mut summary = ScanSummary::default();
+    let skip_project_internals = scope.skips_project_internals(root);
     if cancelled.load(Ordering::Relaxed) {
         summary.cancelled = true;
         return Ok(summary);
@@ -165,6 +186,20 @@ pub fn scan_entries(
             }
             summary.progress.skipped += 1;
             visit(summary.progress, None);
+        } else if directory
+            && skip_project_internals
+            && entry.depth() != 0
+            && let Some(reason) = project_internals(path)
+        {
+            entries.skip_current_dir();
+            summary.progress.skipped += 1;
+            visit(
+                summary.progress,
+                Some(ScanEntry::ScopedOut {
+                    path: path.to_path_buf(),
+                    reason,
+                }),
+            );
         } else if directory {
             summary.progress.directories += 1;
             let empty = fs::read_dir(path)

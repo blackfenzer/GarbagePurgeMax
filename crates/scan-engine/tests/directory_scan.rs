@@ -238,3 +238,76 @@ fn unreadable_or_link_only_folders_are_never_reported_empty() -> io::Result<()> 
     assert!(empty.is_empty());
     Ok(())
 }
+
+#[test]
+fn smart_scope_skips_project_internals_unless_the_project_is_chosen() -> std::io::Result<()> {
+    use scan_engine::{ScanScope, scan_entries_with_scope};
+    use std::sync::atomic::AtomicBool;
+
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().canonicalize()?;
+    let project = home.join("code/app");
+    for (path, bytes) in [
+        ("code/app/src/main.rs", 10),
+        ("code/app/Cargo.toml", 1),
+        ("code/app/target/debug/app", 500),
+        ("code/app/node_modules/left-pad/index.js", 20),
+        ("code/app/.git/objects/ab", 30),
+        ("Documents/notes.txt", 5),
+    ] {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(path, vec![0; bytes])?;
+    }
+    let scan = |root: &std::path::Path| -> std::io::Result<(Vec<String>, Vec<&'static str>)> {
+        let mut files = Vec::new();
+        let mut reasons = Vec::new();
+        scan_entries_with_scope(
+            root,
+            &[],
+            ScanScope::Smart,
+            &AtomicBool::new(false),
+            |_, entry| match entry {
+                Some(scan_engine::ScanEntry::File(file)) => files.push(
+                    file.path
+                        .strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                ),
+                Some(scan_engine::ScanEntry::ScopedOut { reason, .. }) => reasons.push(reason),
+                _ => {}
+            },
+        )?;
+        files.sort();
+        reasons.sort();
+        Ok((files, reasons))
+    };
+
+    let (files, reasons) = scan(&home)?;
+    assert_eq!(
+        files,
+        [
+            "Documents/notes.txt",
+            "code/app/Cargo.toml",
+            "code/app/src/main.rs"
+        ]
+    );
+    assert_eq!(
+        reasons,
+        [
+            "Git object store",
+            "JavaScript dependencies",
+            "Rust build output"
+        ]
+    );
+
+    let (files, reasons) = scan(&project)?;
+    assert_eq!(
+        files.len(),
+        5,
+        "a chosen Git project is scanned in full: {files:?}"
+    );
+    assert!(reasons.is_empty());
+    Ok(())
+}

@@ -11,7 +11,11 @@ use scan_store::SavedScan;
 use super::{Page, Workspace, storage};
 
 mod job;
+#[cfg(test)]
 pub(super) use job::inspect_and_save;
+pub(super) use job::{
+    AnalysisProgress, AnalysisReport, analyze_saved, index_and_save, record_volume_space,
+};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const LARGE_FILE_BYTES: u64 = 1 << 30;
@@ -22,6 +26,24 @@ pub(super) struct ScanSession {
     pub active: Option<ActiveScan>,
     pub report: Option<ScanReport>,
     pub error: Option<String>,
+    /// Duplicate and similar-image analysis of a saved scan, running after indexing.
+    pub analysis: Option<ActiveAnalysis>,
+    /// How the last analysis ended, shown until the next one starts.
+    pub analysis_note: Option<String>,
+}
+
+pub(super) struct ActiveAnalysis {
+    pub root: PathBuf,
+    pub workers: usize,
+    pub progress: Arc<AnalysisProgress>,
+    pub cancelling: bool,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for ActiveAnalysis {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 pub(super) struct ActiveScan {
@@ -53,6 +75,9 @@ pub(super) struct ScanReport {
     pub saved: Option<SavedScan>,
     pub save_error: Option<String>,
     pub timings: ScanTimings,
+    /// Folders a smart scan left unindexed (first 200) and their exact count.
+    pub scoped_out: Vec<(PathBuf, &'static str)>,
+    pub scoped_out_count: u64,
 }
 
 /// Wall-clock diagnostics for one scan; never interpreted as disk throughput.
@@ -127,9 +152,123 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Runs duplicate and similar-image analysis on a saved scan, replacing earlier results.
+    pub(super) fn start_analysis(&mut self, scan: SavedScan, cx: &mut Context<Self>) {
+        if !self.can_start_scan() {
+            return;
+        }
+        let database = match storage::database_path() {
+            Ok(database) => database,
+            Err(error) => {
+                self.scan.analysis_note = Some(format!("Could not start analysis: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        let workers = self.preferences.analysis_workers;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let progress = Arc::new(AnalysisProgress::default());
+        self.scan.analysis_note = None;
+        self.scan.analysis = Some(ActiveAnalysis {
+            root: scan.root.clone(),
+            workers,
+            progress: Arc::clone(&progress),
+            cancelling: false,
+            cancel: Arc::clone(&cancel),
+        });
+
+        let (send, receive) = mpsc::sync_channel(1);
+        cx.background_spawn(async move {
+            let mut timings = ScanTimings::default();
+            let result = analyze_saved(&scan, &database, workers, &cancel, &progress, &mut timings);
+            log::debug!("Analysis phases: {timings:?}");
+            let _ = send.send(result);
+        })
+        .detach();
+
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |workspace, cx| {
+            loop {
+                let result = match receive.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Disconnected) => Some(Err(io::Error::other(
+                        "Analysis worker stopped before returning results",
+                    ))),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                };
+                let finished = workspace.update(cx, |workspace, cx| {
+                    if let Some(result) = result {
+                        workspace.finish_analysis(result, cx);
+                        true
+                    } else {
+                        // Counters change on the worker; redraw to show them.
+                        cx.notify();
+                        false
+                    }
+                });
+                if finished.unwrap_or(true) {
+                    break;
+                }
+                executor.timer(UPDATE_INTERVAL).await;
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(super) fn cancel_analysis(&mut self, cx: &mut Context<Self>) {
+        if let Some(analysis) = &mut self.scan.analysis {
+            analysis.cancelling = true;
+            analysis.cancel.store(true, Ordering::Relaxed);
+            cx.notify();
+        }
+    }
+
+    fn finish_analysis(&mut self, result: io::Result<AnalysisReport>, cx: &mut Context<Self>) {
+        self.scan.analysis = None;
+        match result {
+            Ok(report) => {
+                let problem = report
+                    .first_error
+                    .as_ref()
+                    .map(|error| format!(" First unreadable item: {error}"))
+                    .unwrap_or_default();
+                self.scan.analysis_note = Some(
+                    if report.cancelled {
+                        "Analysis cancelled. Groups found so far are kept; run it again to finish."
+                            .into()
+                    } else {
+                        format!(
+                            "Analysis complete: {}, {}.",
+                            count(report.saved.duplicate_group_count, "duplicate group"),
+                            count(report.saved.similar_group_count, "similar-image group")
+                        )
+                    } + &problem,
+                );
+                if let Some(saved) = self
+                    .scan
+                    .report
+                    .as_mut()
+                    .and_then(|report| report.saved.as_mut())
+                    && saved.id == report.saved.id
+                {
+                    *saved = report.saved.clone();
+                }
+                if self.results.saved_scan().map(|scan| scan.id) == Some(report.saved.id) {
+                    self.results.open_saved(report.saved.clone(), cx);
+                }
+                self.review.open(Some(report.saved), cx);
+                self.overview.load(cx);
+            }
+            Err(error) => self.scan.analysis_note = Some(format!("Analysis failed: {error}")),
+        }
+        cx.notify();
+    }
+
     pub(super) fn can_start_scan(&self) -> bool {
         !self.scan.choosing_folder
             && self.scan.active.is_none()
+            && self.scan.analysis.is_none()
             && !self.exclusion_settings_busy()
             && !self.cleanup.busy
     }
@@ -147,12 +286,18 @@ impl Workspace {
             cancel: Arc::clone(&cancel),
         });
 
+        let scope = self.preferences.scope();
         let latest = Arc::new(Mutex::new(ScanActivity::default()));
         let worker_progress = Arc::clone(&latest);
         let (send, receive) = mpsc::sync_channel(1);
         cx.background_spawn(async move {
-            let result = inspect_and_save(root, storage::database_path(), &cancel, |progress| {
-                *worker_progress.lock().expect("scan progress lock") = progress;
+            let result =
+                index_and_save(root, storage::database_path(), scope, &cancel, |progress| {
+                    *worker_progress.lock().expect("scan progress lock") = progress;
+                });
+            let result = result.map(|mut report| {
+                record_volume_space(&mut report, &cancel);
+                report
             });
             let _ = send.send(result);
         })
@@ -174,9 +319,17 @@ impl Workspace {
                         match result {
                             Ok(report) => {
                                 workspace.results.show_scan(&report, cx);
+                                let analyze = report.saved.clone().filter(|_| {
+                                    !report.summary.cancelled && workspace.preferences.auto_analyze
+                                });
                                 workspace.scan.report = Some(report);
                                 workspace.overview.load(cx);
                                 workspace.page = Page::Results;
+                                if let Some(saved) = analyze {
+                                    // The scan has finished, so this starts once `active` clears.
+                                    workspace.scan.active = None;
+                                    workspace.start_analysis(saved, cx);
+                                }
                             }
                             Err(error) => {
                                 workspace.scan.error =
@@ -224,4 +377,13 @@ pub(super) fn format_bytes(bytes: u64) -> String {
         }
     }
     format!("{bytes} B")
+}
+
+/// `number` and `noun`, with the noun made plural unless the number is one.
+pub(super) fn count(number: u64, noun: &str) -> String {
+    if number == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{number} {noun}s")
+    }
 }

@@ -1,5 +1,26 @@
 # Development progress
 
+## 2026-11-21 · Smart scope, separate analysis, bento Overview, resizable Amber Deck
+
+**Smart scope** (`scan-engine/src/scan_scope.rs`, on by default). A broad scan no longer indexes regenerable project internals: `.git`, `node_modules`, web build caches, Python caches and virtual environments (with `pyvenv.cfg`), Rust `target` (beside `Cargo.toml`), Gradle, CocoaPods, vendored Go/PHP, Terraform and .NET `bin`/`obj` (beside a project file). Choosing a folder inside a Git project scans it in full. Each skipped folder is reported (`ScanEntry::ScopedOut`) and counted in Overview. Game libraries (Steam, Epic, GOG, Xbox, Riot, EA, Ubisoft, Battle.net), app bundles and system folders below the chosen folder are indexed for size but left out of duplicate and similar-image analysis. Smart scope can be turned off in Overview.
+
+**Analysis runs after the index is saved.** Indexing commits the scan straight away, so Results, Space Map and history are usable immediately. Analysis then reopens the saved index (`ScanStore::begin_analysis`), clears earlier groups and writes new ones in its own transaction. Overview shows a three-step pipeline with live progress (duplicate candidates checked out of the total, images compared, groups found, files skipped in games/apps/system folders), **Cancel analysis**, **Run analysis again**, an image-worker count (1 to the number of cores, default 2) and **Analyze after each scan**. These preferences are saved in a `preferences` file beside the database. Duplicate checks stay single-threaded because they are bound by disk reads. While analysis runs, new scans and cleanup are blocked so they cannot wait on its write lock. Re-running analysis renumbers duplicate groups; queued cleanup items are revalidated before any move, so a stale group fails safely.
+
+**Overview** is now a bento dashboard: scan hero with large stats, disk usage bar showing the scanned folder's share, analysis pipeline, storage-by-type stacked bar, findings tiles, smart-scope card, exclusions, then recent scans.
+
+**Amber Deck** panels and footer are resizable (GPUI Kit resizable groups); the footer fills its row, and the left panel scrolls.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` (and with `--features ui-smoke` for the app) | Passed |
+| `cargo test --locked --workspace` | **106 passed**, 0 failed, 7 ignored (new: smart-scope traversal, scope rules, re-run analysis, game-library exemption) |
+| `cargo test --locked -p storage-clinic --features ui-smoke --test ui_smoke` | Passed; checks auto-analysis found the copied movie and smart scope skipped `node_modules` and `.git`; screenshots reviewed |
+| `sh .github/scripts/clippy-windows.sh` | Passed |
+| `python3 -B crates/scan-store/tests/test_schema.py` | Passed |
+
+**Not verified:** analysis progress while it is running was not captured on screen (the smoke run waits for it to finish), dragging the Amber Deck dividers, Windows game-library paths on a real machine, and smart-scope speed on a real drive.
+
 ## 2026-11-21 · Headless UI smoke test and faster folder totals
 
 **UI smoke test.** `cargo test --locked -p storage-clinic --features ui-smoke --test ui_smoke` starts the app binary in an off-screen window (GPUI `VisualTestAppContext` with the real macOS platform), scans a synthetic home folder, opens all seven pages in both themes, checks Space Map totals and folder navigation plus the footer's year data, and saves 15 screenshots to `target/ui-smoke/`. Rendering goes to a Metal texture, so no screen recording permission is needed. The binary runs the check itself because macOS requires the platform on the main thread, which libtest does not give tests. The `ui-smoke` feature is off in normal builds; `STORAGE_CLINIC_DATA_DIR` (new, also useful for trial runs) keeps the run away from real app data, and the run refuses to start without it.

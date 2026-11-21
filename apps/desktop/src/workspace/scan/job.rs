@@ -1,22 +1,47 @@
 use std::io;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use scan_engine::{
-    FileRecord, ScanEntry, ScanProgress, ScanSummary, find_similar_images, is_hashable_image,
-    scan_entries, verify_duplicate_group_cached, volume_space,
+    FileRecord, ScanEntry, ScanProgress, ScanScope, analysis_exemption, find_similar_images_with,
+    scan_entries_with_scope, verify_duplicate_group_cached, volume_space,
 };
-use scan_store::ScanWriter;
+use scan_store::SavedScan;
 
 use super::{LARGE_FILE_BYTES, ScanActivity, ScanReport, ScanTimings, UPDATE_INTERVAL};
 use crate::workspace::{exclusions, storage};
 
 const PREVIEW_LIMIT: usize = 100;
+/// Folders a smart scan left out that the report lists by path; the count stays exact.
+const SCOPED_OUT_LIMIT: usize = 200;
 
-pub(in crate::workspace) fn inspect_and_save(
+/// Live counters of a running analysis, read by the UI while the worker writes them.
+#[derive(Default)]
+pub(in crate::workspace) struct AnalysisProgress {
+    /// False while exact duplicates are checked, true once images are being compared.
+    pub comparing_images: AtomicBool,
+    pub candidates_total: AtomicU64,
+    pub candidates_checked: AtomicU64,
+    pub duplicate_groups: AtomicU64,
+    /// Candidates skipped because they sit in a game library, app bundle or system folder.
+    pub exempt_files: AtomicU64,
+    pub images_total: AtomicUsize,
+    pub images_done: AtomicUsize,
+}
+
+pub(in crate::workspace) struct AnalysisReport {
+    pub saved: SavedScan,
+    pub cancelled: bool,
+    pub first_error: Option<String>,
+}
+
+/// Indexes `root` and commits the scan right away, so results can be browsed while
+/// duplicate and similar-image analysis runs separately with `analyze_saved`.
+pub(in crate::workspace) fn index_and_save(
     root: PathBuf,
     database_path: io::Result<PathBuf>,
+    scope: ScanScope,
     cancel: &AtomicBool,
     mut progress_changed: impl FnMut(ScanActivity),
 ) -> io::Result<ScanReport> {
@@ -41,12 +66,14 @@ pub(in crate::workspace) fn inspect_and_save(
                     None
                 }
             });
-    let mut image_files = Vec::new();
     let setup = started.elapsed();
     let started = Instant::now();
+    let mut scoped_out = Vec::new();
+    let mut scoped_out_count = 0_u64;
     let mut report = inspect_folder(
         root,
         &exclusions,
+        scope,
         cancel,
         LARGE_FILE_BYTES,
         |progress| {
@@ -56,166 +83,215 @@ pub(in crate::workspace) fn inspect_and_save(
             })
         },
         |entry| {
-            if let ScanEntry::File(file) = entry
-                && writer.is_some()
-                && is_hashable_image(&file.path)
-            {
-                image_files.push(file.clone());
-            }
-            if let Some(current) = &mut writer
-                && let Err(error) = match entry {
-                    ScanEntry::File(file) => current.insert_file(file),
-                    ScanEntry::Directory(directory) => current.insert_directory(directory),
+            let saved = match entry {
+                ScanEntry::File(file) => writer.as_mut().map(|current| current.insert_file(file)),
+                ScanEntry::Directory(directory) => writer
+                    .as_mut()
+                    .map(|current| current.insert_directory(directory)),
+                ScanEntry::ScopedOut { path, reason } => {
+                    scoped_out_count += 1;
+                    if scoped_out.len() < SCOPED_OUT_LIMIT {
+                        scoped_out.push((path.clone(), *reason));
+                    }
+                    None
                 }
-            {
+            };
+            if let Some(Err(error)) = saved {
                 save_error = Some(error.to_string());
                 // Dropping the writer discards the entire incomplete database transaction.
                 writer = None;
-                image_files = Vec::new();
             }
         },
     )?;
     report.timings.setup = setup;
     report.timings.indexing = started.elapsed();
-    if let Some(mut writer) = writer {
-        let verification = if report.summary.cancelled {
-            Ok(())
-        } else {
-            progress_changed(ScanActivity {
-                progress: report.summary.progress,
-                analyzing: true,
-            });
-            verify_indexed_duplicates(
-                &mut writer,
-                &mut report.summary,
-                cancel,
-                &mut report.timings,
-            )
-            .and_then(|()| {
-                let started = Instant::now();
-                let result =
-                    group_similar_images(&mut writer, &image_files, &mut report.summary, cancel);
-                report.timings.image_analysis = started.elapsed();
-                result
-            })
-        };
-        let saved = verification.and_then(|()| {
-            let started = Instant::now();
-            let result = writer
-                .finish(&report.summary, report.large_file_count)
-                .map_err(io::Error::other);
-            report.timings.commit = started.elapsed();
-            result
-        });
-        match saved {
+    report.scoped_out = scoped_out;
+    report.scoped_out_count = scoped_out_count;
+    if let Some(writer) = writer {
+        let started = Instant::now();
+        match writer.finish(&report.summary, report.large_file_count) {
             Ok(saved) => report.saved = Some(saved),
             Err(error) => save_error = Some(error.to_string()),
         }
+        report.timings.commit = started.elapsed();
     }
     report.save_error = save_error;
-    // Optional OS statistics must never discard a successful scan or delay an
-    // already-cancelled scan. This query stays on the background worker.
+    log::debug!("Scan phases: {:?}", report.timings);
+    Ok(report)
+}
+
+/// Adds the containing volume's capacity to a finished scan. Optional OS statistics must
+/// never discard a successful scan or delay a cancelled one; call this on a background worker.
+pub(in crate::workspace) fn record_volume_space(report: &mut ScanReport, cancel: &AtomicBool) {
     if !report.summary.cancelled && !cancel.load(Ordering::Relaxed) {
         let started = Instant::now();
         report.volume_space = Some(volume_space(&report.root).map_err(|error| error.to_string()));
         report.timings.volume_query = started.elapsed();
     }
-    log::debug!("Scan phases: {:?}", report.timings);
-    Ok(report)
 }
 
-fn verify_indexed_duplicates(
-    writer: &mut ScanWriter<'_>,
-    summary: &mut ScanSummary,
+/// Finds exact duplicates, then similar images, in a saved scan, replacing any earlier
+/// results. `workers` threads decode images; duplicate checks read one file at a time,
+/// which suits spinning disks. Groups found before a cancellation are kept.
+pub(in crate::workspace) fn analyze_saved(
+    scan: &SavedScan,
+    database_path: &Path,
+    workers: usize,
     cancel: &AtomicBool,
+    progress: &AnalysisProgress,
     timings: &mut ScanTimings,
-) -> io::Result<()> {
+) -> io::Result<AnalysisReport> {
+    let mut store = storage::open_at(database_path)?;
+    let images = store.image_files(scan.id).map_err(io::Error::other)?;
+    let candidates = store
+        .duplicate_candidate_count(scan.id)
+        .map_err(io::Error::other)?;
+    progress
+        .candidates_total
+        .store(candidates, Ordering::Relaxed);
+    let mut writer = store.begin_analysis(scan).map_err(io::Error::other)?;
+    let mut first_error = None;
+
+    // Exact duplicates, one size group at a time.
     let mut after_size = None;
     let mut error_count = 0_u64;
-    while !cancel.load(Ordering::Relaxed) {
+    let mut cancelled = false;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
         let started = Instant::now();
         let files = writer
             .next_duplicate_candidates(after_size)
             .map_err(io::Error::other);
         timings.candidate_queries += started.elapsed();
-        let files = files?;
-        timings.largest_candidate_set = timings.largest_candidate_set.max(files.len());
+        let mut files = files?;
         let Some(first) = files.first() else {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            return writer
+            writer
                 .mark_duplicates_analyzed(error_count)
-                .map_err(io::Error::other);
+                .map_err(io::Error::other)?;
+            break;
         };
         after_size = Some(first.logical_bytes);
-        let started = Instant::now();
-        let analysis = verify_duplicate_group_cached(&files, cancel, writer);
-        timings.duplicate_verification += started.elapsed();
-        let started = Instant::now();
-        writer
-            .record_cache_usage(analysis.cache_hits, analysis.cache_misses)
-            .map_err(io::Error::other)?;
-        error_count = error_count.saturating_add(analysis.errors);
-        writer.record_duplicate_errors(error_count);
-        if summary.first_error.is_none() {
-            summary.first_error = analysis.first_error;
+        let size_group = files.len() as u64;
+        files.retain(|file| analysis_exemption(&file.path, &scan.root).is_none());
+        progress
+            .exempt_files
+            .fetch_add(size_group - files.len() as u64, Ordering::Relaxed);
+        timings.largest_candidate_set = timings.largest_candidate_set.max(files.len());
+        if files.len() > 1 {
+            let started = Instant::now();
+            let analysis = verify_duplicate_group_cached(&files, cancel, &mut writer);
+            timings.duplicate_verification += started.elapsed();
+            let started = Instant::now();
+            writer
+                .record_cache_usage(analysis.cache_hits, analysis.cache_misses)
+                .map_err(io::Error::other)?;
+            error_count = error_count.saturating_add(analysis.errors);
+            writer.record_duplicate_errors(error_count);
+            first_error = first_error.or(analysis.first_error);
+            if analysis.cancelled || cancel.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+            for group in analysis.groups {
+                writer
+                    .insert_duplicate_group(&group.paths, &group.hash)
+                    .map_err(io::Error::other)?;
+                progress.duplicate_groups.fetch_add(1, Ordering::Relaxed);
+            }
+            timings.duplicate_writes += started.elapsed();
         }
-        if analysis.cancelled || cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        for group in analysis.groups {
-            if cancel.load(Ordering::Relaxed) {
-                summary.cancelled = true;
-                return Ok(());
+        progress
+            .candidates_checked
+            .fetch_add(size_group, Ordering::Relaxed);
+    }
+
+    // Similar images, outside game libraries, app bundles and system folders.
+    if !cancelled {
+        progress.comparing_images.store(true, Ordering::Relaxed);
+        let images: Vec<FileRecord> = images
+            .into_iter()
+            .filter(|image| analysis_exemption(&image.path, &scan.root).is_none())
+            .collect();
+        progress.images_total.store(images.len(), Ordering::Relaxed);
+        let started = Instant::now();
+        let analysis = find_similar_images_with(&images, workers, &progress.images_done, cancel);
+        timings.image_analysis = started.elapsed();
+        writer.record_image_errors(analysis.errors);
+        first_error = first_error.or(analysis.first_error.clone());
+        if analysis.cancelled {
+            cancelled = true;
+        } else {
+            for group in &analysis.groups {
+                writer
+                    .insert_similar_image_group(&group.members)
+                    .map_err(io::Error::other)?;
             }
             writer
-                .insert_duplicate_group(&group.paths, &group.hash)
+                .mark_similar_images_analyzed(analysis.errors)
                 .map_err(io::Error::other)?;
         }
-        timings.duplicate_writes += started.elapsed();
     }
-    summary.cancelled = true;
-    Ok(())
+    let started = Instant::now();
+    let saved = writer.finish_analysis().map_err(io::Error::other)?;
+    timings.commit += started.elapsed();
+    Ok(AnalysisReport {
+        saved,
+        cancelled,
+        first_error,
+    })
 }
 
-/// Groups perceptually similar images after exact duplicates are saved. Decode failures
-/// are counted on the scan, not reported as traversal errors.
-fn group_similar_images(
-    writer: &mut ScanWriter<'_>,
-    image_files: &[FileRecord],
-    summary: &mut ScanSummary,
+/// Indexing then analysis in one call, as the app ran them before analysis became separate.
+#[cfg(test)]
+pub(in crate::workspace) fn inspect_and_save(
+    root: PathBuf,
+    database_path: io::Result<PathBuf>,
     cancel: &AtomicBool,
-) -> io::Result<()> {
-    if summary.cancelled {
-        return Ok(());
+    mut progress_changed: impl FnMut(ScanActivity),
+) -> io::Result<ScanReport> {
+    let database = database_path.as_ref().ok().cloned();
+    let mut report = index_and_save(
+        root,
+        database_path,
+        ScanScope::Everything,
+        cancel,
+        &mut progress_changed,
+    )?;
+    let (Some(scan), Some(database)) = (report.saved.clone(), database) else {
+        record_volume_space(&mut report, cancel);
+        return Ok(report);
+    };
+    if report.summary.cancelled {
+        return Ok(report);
     }
-    let analysis = find_similar_images(image_files, cancel);
-    writer.record_image_errors(analysis.errors);
-    if summary.first_error.is_none() {
-        summary.first_error = analysis.first_error.clone();
+    progress_changed(ScanActivity {
+        progress: report.summary.progress,
+        analyzing: true,
+    });
+    let analysis = analyze_saved(
+        &scan,
+        &database,
+        scan_engine::DEFAULT_IMAGE_WORKERS,
+        cancel,
+        &AnalysisProgress::default(),
+        &mut report.timings,
+    )?;
+    report.summary.cancelled |= analysis.cancelled;
+    if report.summary.first_error.is_none() {
+        report.summary.first_error = analysis.first_error;
     }
-    if analysis.cancelled {
-        summary.cancelled = true;
-        return Ok(());
-    }
-    for group in &analysis.groups {
-        if cancel.load(Ordering::Relaxed) {
-            summary.cancelled = true;
-            return Ok(());
-        }
-        writer
-            .insert_similar_image_group(&group.members)
-            .map_err(io::Error::other)?;
-    }
-    writer
-        .mark_similar_images_analyzed(analysis.errors)
-        .map_err(io::Error::other)
+    report.saved = Some(analysis.saved);
+    record_volume_space(&mut report, cancel);
+    Ok(report)
 }
 
 fn inspect_folder(
     root: PathBuf,
     exclusions: &[PathBuf],
+    scope: ScanScope,
     cancel: &AtomicBool,
     large_file_threshold: u64,
     mut progress_changed: impl FnMut(ScanProgress),
@@ -224,7 +300,7 @@ fn inspect_folder(
     let mut largest_files = Vec::new();
     let mut large_file_count = 0;
     let mut last_update = Instant::now();
-    let summary = scan_entries(&root, exclusions, cancel, |progress, entry| {
+    let summary = scan_entries_with_scope(&root, exclusions, scope, cancel, |progress, entry| {
         if let Some(entry) = &entry {
             entry_found(entry);
         }
@@ -250,6 +326,8 @@ fn inspect_folder(
         saved: None,
         save_error: None,
         timings: ScanTimings::default(),
+        scoped_out: Vec::new(),
+        scoped_out_count: 0,
     })
 }
 
@@ -298,6 +376,53 @@ mod tests {
     }
 
     #[test]
+    fn analysis_skips_game_libraries_but_indexes_them() -> io::Result<()> {
+        let fixture = tempfile::tempdir()?;
+        let root = fixture.path().join("drive");
+        let database = fixture.path().join("app-data/scans.sqlite3");
+        for path in [
+            "SteamLibrary/steamapps/common/Game/a.pak",
+            "SteamLibrary/steamapps/common/Game/b.pak",
+            "Backups/a.pak",
+            "Backups/b.pak",
+        ] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(path, b"same bytes")?;
+        }
+        let cancel = AtomicBool::new(false);
+        let report = index_and_save(
+            root.clone(),
+            Ok(database.clone()),
+            ScanScope::Smart,
+            &cancel,
+            |_| {},
+        )?;
+        let scan = report.saved.expect("index saved");
+        assert_eq!(
+            scan.progress.files, 4,
+            "game files are still indexed for size"
+        );
+        let progress = AnalysisProgress::default();
+        let analysis = analyze_saved(
+            &scan,
+            &database,
+            2,
+            &cancel,
+            &progress,
+            &mut ScanTimings::default(),
+        )?;
+        assert!(!analysis.cancelled);
+        assert_eq!(
+            analysis.saved.duplicate_group_count, 1,
+            "only the backup copies are grouped"
+        );
+        assert_eq!(progress.exempt_files.load(Ordering::Relaxed), 2);
+        assert_eq!(progress.candidates_checked.load(Ordering::Relaxed), 4);
+        Ok(())
+    }
+
+    #[test]
     fn disappearing_files_preserve_index_and_other_analysis_groups() -> io::Result<()> {
         let fixture = tempfile::tempdir()?;
         let root = fixture.path().join("tree");
@@ -328,7 +453,15 @@ mod tests {
         assert_eq!(saved.similar_group_count, 1);
         assert_eq!(saved.image_error_count, 1);
         assert!(saved.duplicates_analyzed && saved.similar_images_analyzed);
-        assert!(saved.first_error.as_ref().unwrap().contains("missing"));
+        // Analysis problems are reported for the session; the saved row keeps indexing errors.
+        assert!(
+            report
+                .summary
+                .first_error
+                .as_ref()
+                .unwrap()
+                .contains("missing")
+        );
         let reopened = storage::open_at(&database)?;
         assert_eq!(
             reopened
@@ -403,6 +536,7 @@ mod tests {
         let report = inspect_folder(
             root.path().to_path_buf(),
             &[],
+            ScanScope::Everything,
             &AtomicBool::new(false),
             threshold,
             |_| {},
@@ -593,7 +727,8 @@ mod tests {
         assert!(report.summary.cancelled);
         assert!(report.volume_space.is_none());
         let saved = report.saved.unwrap();
-        assert!(saved.cancelled);
+        // The index was saved as complete; only its analysis was cancelled.
+        assert!(!saved.cancelled);
         assert!(!saved.duplicates_analyzed);
         assert!(!saved.similar_images_analyzed);
         assert_eq!(saved.duplicate_group_count, 0);

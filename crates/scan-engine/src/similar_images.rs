@@ -57,16 +57,33 @@ pub fn difference_hash(image: &GrayImage) -> u64 {
         })
 }
 
-/// Decodes images read-only with at most two workers and hashes them. Each image joins the closest
-/// earlier reference within `SIMILAR_IMAGE_DISTANCE`, or becomes a reference itself, so
-/// every reported distance is measured to the group's reference. Cancellation discards groups.
+/// Workers used when the caller does not choose: each decodes one bounded image at a time.
+pub const DEFAULT_IMAGE_WORKERS: usize = 2;
+
+/// Decodes images read-only with the default two workers and hashes them.
+/// See [`find_similar_images_with`].
 pub fn find_similar_images(files: &[FileRecord], cancelled: &AtomicBool) -> SimilarImageAnalysis {
+    find_similar_images_with(
+        files,
+        DEFAULT_IMAGE_WORKERS,
+        &AtomicUsize::new(0),
+        cancelled,
+    )
+}
+
+/// Decodes images read-only with `workers` threads (at least one) and hashes them, counting
+/// each finished image in `processed`. Each image joins the closest earlier reference within
+/// `SIMILAR_IMAGE_DISTANCE`, or becomes a reference itself, so every reported distance is
+/// measured to the group's reference. Cancellation discards groups.
+pub fn find_similar_images_with(
+    files: &[FileRecord],
+    workers: usize,
+    processed: &AtomicUsize,
+    cancelled: &AtomicBool,
+) -> SimilarImageAnalysis {
     let next = AtomicUsize::new(0);
     let hashed = Mutex::new(Vec::with_capacity(files.len()));
-    let workers = thread::available_parallelism()
-        .map_or(1, usize::from)
-        .min(2)
-        .min(files.len());
+    let workers = workers.max(1).min(files.len());
     thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -77,6 +94,7 @@ pub fn find_similar_images(files: &[FileRecord], cancelled: &AtomicBool) -> Simi
                     };
                     let hash = image_hash(record, cancelled);
                     hashed.lock().expect("image hash lock").push((index, hash));
+                    processed.fetch_add(1, Ordering::Relaxed);
                 }
             });
         }

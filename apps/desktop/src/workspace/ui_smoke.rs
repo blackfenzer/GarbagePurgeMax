@@ -54,18 +54,37 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
     let mut finished = false;
     for _ in 0..600 {
         settle(&mut cx);
-        if window.update(&mut cx, |workspace, _, _| workspace.scan.active.is_none())? {
+        if window.update(&mut cx, |workspace, _, _| {
+            workspace.scan.active.is_none() && workspace.scan.analysis.is_none()
+        })? {
             finished = true;
             break;
         }
     }
-    ensure(finished, "the scan finished")?;
-    let (scan_id, error) = window.update(&mut cx, |workspace, _, _| {
+    ensure(finished, "the scan and its analysis finished")?;
+    let (scan_id, error, duplicates, skipped) = window.update(&mut cx, |workspace, _, _| {
         (
             workspace.results.saved_scan().map(|scan| scan.id),
             workspace.scan.error.clone(),
+            workspace
+                .results
+                .saved_scan()
+                .map(|scan| scan.duplicate_group_count),
+            workspace
+                .scan
+                .report
+                .as_ref()
+                .map(|report| report.scoped_out_count),
         )
     })?;
+    ensure(
+        duplicates == Some(1),
+        &format!("analysis found the copied movie: {duplicates:?}"),
+    )?;
+    ensure(
+        skipped == Some(2),
+        &format!("smart scope skipped node_modules and .git: {skipped:?}"),
+    )?;
     ensure(error.is_none(), &format!("the scan succeeded: {error:?}"))?;
     ensure(scan_id.is_some(), "the scan was saved")?;
 
@@ -180,6 +199,9 @@ fn write_fixture(root: &Path) -> std::io::Result<()> {
     file("Documents/notes.txt", b"synthetic notes".to_vec())?;
     file("Documents/empty.txt", Vec::new())?;
     file(".DS_Store", vec![0; 6])?;
+    file("Code/app/package.json", b"{}".to_vec())?;
+    file("Code/app/node_modules/left-pad/index.js", vec![1; 300_000])?;
+    file("Code/app/.git/HEAD", b"ref: refs/heads/main".to_vec())?;
     for (name, shade) in [("sunrise.png", 0u8), ("sunrise-copy.png", 2)] {
         let image = image::RgbImage::from_fn(64, 48, |x, _| {
             let value = (x as u8).saturating_mul(4).saturating_add(shade);

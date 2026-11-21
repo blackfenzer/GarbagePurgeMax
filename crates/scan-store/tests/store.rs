@@ -893,3 +893,48 @@ fn folder_summary_speed_on_a_million_files() -> Result<(), Box<dyn std::error::E
     println!("file_types: {:?}", started.elapsed());
     Ok(())
 }
+
+#[test]
+fn analysis_can_run_again_on_a_saved_index() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(directory.path(), 1 << 30)?;
+    for record in [
+        file("a.bin", 8),
+        file("b.bin", 8),
+        file("photo.PNG", 3),
+        file("c.txt", 1),
+    ] {
+        writer.insert_file(&record)?;
+    }
+    writer.insert_duplicate_group(&[PathBuf::from("a.bin"), PathBuf::from("b.bin")], &[1; 32])?;
+    writer.mark_duplicates_analyzed(0)?;
+    let scan = writer.finish(&summary(4, false), 0)?;
+    assert_eq!(scan.duplicate_group_count, 1);
+    assert_eq!(store.duplicate_candidate_count(scan.id)?, 2);
+    assert_eq!(
+        paths(&store.image_files(scan.id)?),
+        [PathBuf::from("photo.PNG")]
+    );
+
+    // A cancelled re-run clears earlier groups and leaves the scan unanalyzed.
+    let cleared = store.begin_analysis(&scan)?.finish_analysis()?;
+    assert!(!cleared.duplicates_analyzed);
+    assert_eq!(store.duplicate_groups(scan.id, 10, 0)?.len(), 0);
+
+    let mut writer = store.begin_analysis(&cleared)?;
+    writer.insert_duplicate_group(&[PathBuf::from("a.bin"), PathBuf::from("b.bin")], &[2; 32])?;
+    writer.mark_duplicates_analyzed(0)?;
+    let analyzed = writer.finish_analysis()?;
+    assert!(analyzed.duplicates_analyzed);
+    assert_eq!(analyzed.duplicate_group_count, 1);
+    let reopened = store
+        .scans(10, 0)?
+        .into_iter()
+        .find(|saved| saved.id == scan.id)
+        .unwrap();
+    assert_eq!(reopened.duplicate_group_count, 1);
+    assert!(reopened.duplicates_analyzed);
+    assert_eq!(reopened.progress.files, 4, "the index is untouched");
+    Ok(())
+}

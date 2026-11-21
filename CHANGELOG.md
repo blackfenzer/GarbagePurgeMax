@@ -1,5 +1,12 @@
 # Changelog
 
+## Smart scope and background analysis — 2026-11-21
+
+- Added smart scan scope: broad scans skip project dependencies, build output and Git object stores; a chosen Git project scans in full; game libraries, app bundles and system folders are sized but not analysed for duplicates.
+- Duplicate and similar-image analysis now runs after the index is saved, with live progress, cancel, run again, a configurable image-worker count and an auto-analyze switch.
+- Rebuilt Overview as a bento dashboard with charts and stat tiles.
+- Amber Deck panels and footer are resizable.
+
 ## Space Map and themes — 2026-11-21
 
 - Added Space Map: a saved scan's folders by logical size with % of folder, file counts, main file type, a squarified treemap, breadcrumbs and an inspector. It reads saved paths only and moves nothing.

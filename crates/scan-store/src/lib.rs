@@ -582,6 +582,68 @@ impl ScanStore {
         Ok(largest_types_first(totals))
     }
 
+    /// Reopens a saved scan's index for duplicate and similar-image analysis. Earlier groups,
+    /// counts and analysis flags are cleared in the same transaction, so analysis can run
+    /// again; nothing is visible to readers until `ScanWriter::finish_analysis` commits.
+    pub fn begin_analysis(&mut self, scan: &SavedScan) -> rusqlite::Result<ScanWriter<'_>> {
+        let transaction = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for statement in [
+            "DELETE FROM duplicate_groups WHERE scan_id = ?1",
+            "DELETE FROM similar_image_groups WHERE scan_id = ?1",
+            "UPDATE scans SET duplicates_analyzed = 0, duplicate_group_count = 0,
+                              duplicate_error_count = 0, similar_images_analyzed = 0,
+                              similar_group_count = 0, image_error_count = 0,
+                              hash_cache_hits = 0, hash_cache_misses = 0
+             WHERE id = ?1",
+        ] {
+            transaction.execute(statement, [scan.id])?;
+        }
+        let scan = SavedScan {
+            duplicates_analyzed: false,
+            duplicate_group_count: 0,
+            duplicate_error_count: 0,
+            similar_images_analyzed: false,
+            similar_group_count: 0,
+            image_error_count: 0,
+            hash_cache_hits: 0,
+            hash_cache_misses: 0,
+            ..scan.clone()
+        };
+        Ok(ScanWriter { transaction, scan })
+    }
+
+    /// Indexed files that share their size with another file: the duplicate candidates.
+    pub fn duplicate_candidate_count(&self, scan_id: i64) -> rusqlite::Result<u64> {
+        self.0
+            .prepare_cached(
+                "SELECT count(*) FROM files
+                 WHERE scan_id = ?1 AND logical_bytes IN (
+                     SELECT logical_bytes FROM files WHERE scan_id = ?1
+                     GROUP BY logical_bytes HAVING count(*) > 1
+                 )",
+            )?
+            .query_row([scan_id], |row| unsigned_integer(row, 0))
+    }
+
+    /// Indexed files with an image extension the similar-image check can decode.
+    pub fn image_files(&self, scan_id: i64) -> rusqlite::Result<Vec<FileRecord>> {
+        let mut statement = self.0.prepare_cached(
+            "SELECT path_key, display_path, logical_bytes, created_unix_seconds,
+                    created_subsec_nanos, modified_unix_seconds, modified_subsec_nanos, read_only
+             FROM files WHERE scan_id = ?1 ORDER BY path_key",
+        )?;
+        let mut images = Vec::new();
+        for file in statement.query_map([scan_id], file_record)? {
+            let file = file?;
+            if scan_engine::is_hashable_image(&file.path) {
+                images.push(file);
+            }
+        }
+        Ok(images)
+    }
+
     /// Totals the direct children of `folder` from saved native paths, for the Space Map.
     /// Cancelled scans cover the indexed part.
     // ponytail: reads every file row beneath `folder` per call (about 0.3 s at the root of a
@@ -837,6 +899,25 @@ impl ScanWriter<'_> {
         self.scan.similar_images_analyzed = true;
         self.scan.image_error_count = error_count;
         Ok(())
+    }
+
+    /// Commits analysis started with `ScanStore::begin_analysis`. Groups found before a
+    /// cancellation are kept; only completed passes are marked analyzed.
+    pub fn finish_analysis(self) -> rusqlite::Result<SavedScan> {
+        self.transaction.execute(
+            "UPDATE scans SET duplicate_group_count = ?1, similar_group_count = ?2,
+                              duplicate_error_count = ?3, image_error_count = ?4
+             WHERE id = ?5",
+            params![
+                sqlite_integer(self.scan.duplicate_group_count)?,
+                sqlite_integer(self.scan.similar_group_count)?,
+                sqlite_integer(self.scan.duplicate_error_count)?,
+                sqlite_integer(self.scan.image_error_count)?,
+                self.scan.id,
+            ],
+        )?;
+        self.transaction.commit()?;
+        Ok(self.scan)
     }
 
     pub fn finish(

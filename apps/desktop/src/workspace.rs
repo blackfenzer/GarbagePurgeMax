@@ -3,6 +3,7 @@ mod deck;
 mod exclusions;
 mod history;
 mod overview;
+mod preferences;
 mod results;
 mod review;
 mod scan;
@@ -49,6 +50,7 @@ pub(crate) struct Workspace {
     theme: AppTheme,
     /// The page in Amber Deck's left panel; `page` drives its right panel.
     deck_left: Page,
+    preferences: preferences::Preferences,
 }
 
 impl Render for Workspace {
@@ -109,6 +111,7 @@ impl Workspace {
             space_map: space_map::SpaceMap::default(),
             theme,
             deck_left: Page::SpaceMap,
+            preferences: preferences::Preferences::load(),
             page: Page::default(),
             exclusions: exclusions::Exclusions::load(cx),
             results: results::Results::new(window, cx),
@@ -123,6 +126,7 @@ impl Workspace {
     /// One page's content. Both layouts show pages through this.
     fn page_view(&self, page: Page, cx: &Context<Self>) -> AnyElement {
         let cleanup_blocked = self.scan.active.is_some()
+            || self.scan.analysis.is_some()
             || self.scan.choosing_folder
             || self.exclusion_settings_busy();
         match page {
@@ -146,6 +150,17 @@ impl Workspace {
                 .render(true, cleanup_blocked, cx)
                 .into_any_element(),
         }
+    }
+
+    /// Applies a preference change and saves it for the next launch.
+    fn change_preferences(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut preferences::Preferences),
+    ) {
+        change(&mut self.preferences);
+        self.preferences.save();
+        cx.notify();
     }
 
     /// Loads what `page` shows when it is opened.

@@ -299,6 +299,8 @@ impl SpaceMap {
         div()
             .flex()
             .flex_col()
+            .size_full()
+            .overflow_hidden()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.title_bar)

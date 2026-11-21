@@ -11,7 +11,9 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
-use super::{Page, Workspace, overview};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
+
+use super::{Page, Workspace, overview, scan::count};
 
 /// Left panel tabs: the views that explain where space goes.
 const LEFT_TABS: [(Page, &str); 3] = [
@@ -43,16 +45,34 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
         .text_color(theme.foreground)
         .child(top_bar(workspace, cx))
         .child(
-            div()
-                .flex()
-                .flex_1()
-                .min_h(px(0.0))
-                .gap_3()
-                .p_3()
-                .child(panel(workspace, Side::Left, workspace.deck_left, cx))
-                .child(panel(workspace, Side::Right, right, cx)),
+            // Drag the dividers to resize the panels and the footer; sizes last for the session.
+            div().flex_1().min_h(px(0.0)).child(
+                v_resizable("deck-rows")
+                    .child(
+                        resizable_panel().child(
+                            div().size_full().p_3().child(
+                                h_resizable("deck-panels")
+                                    .child(
+                                        resizable_panel().size_range(px(320.0)..px(4000.0)).child(
+                                            panel(workspace, Side::Left, workspace.deck_left, cx),
+                                        ),
+                                    )
+                                    .child(
+                                        resizable_panel()
+                                            .size_range(px(360.0)..px(4000.0))
+                                            .child(panel(workspace, Side::Right, right, cx)),
+                                    ),
+                            ),
+                        ),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size(px(170.0))
+                            .size_range(px(96.0)..px(480.0))
+                            .child(workspace.space_map.footer(cx)),
+                    ),
+            ),
         )
-        .child(workspace.space_map.footer(cx))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -130,14 +150,6 @@ fn top_bar(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
         .child(workspace.theme_buttons(false, cx))
 }
 
-fn count(number: u64, noun: &str) -> String {
-    if number == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{number} {noun}s")
-    }
-}
-
 fn chip(text: String, cx: &Context<Workspace>) -> Div {
     let theme = cx.theme();
     div()
@@ -193,7 +205,7 @@ fn panel(workspace: &Workspace, side: Side, current: Page, cx: &Context<Workspac
     div()
         .flex()
         .flex_col()
-        .flex_1()
+        .size_full()
         .min_w(px(0.0))
         .border_1()
         .border_color(theme.border)
