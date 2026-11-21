@@ -85,6 +85,18 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
         skipped == Some(2),
         &format!("smart scope skipped node_modules and .git: {skipped:?}"),
     )?;
+    settle(&mut cx);
+    let caches = window.update(&mut cx, |workspace, _, _| {
+        workspace
+            .overview
+            .data
+            .as_ref()
+            .map(|data| data.caches.len())
+    })?;
+    ensure(
+        caches == Some(1),
+        &format!("Overview found the npm cache: {caches:?}"),
+    )?;
     ensure(error.is_none(), &format!("the scan succeeded: {error:?}"))?;
     ensure(scan_id.is_some(), "the scan was saved")?;
 
@@ -202,6 +214,7 @@ fn write_fixture(root: &Path) -> std::io::Result<()> {
     file("Code/app/package.json", b"{}".to_vec())?;
     file("Code/app/node_modules/left-pad/index.js", vec![1; 300_000])?;
     file("Code/app/.git/HEAD", b"ref: refs/heads/main".to_vec())?;
+    file(".npm/_cacache/content-v2/sha512/aa/bb", vec![2; 50_000])?;
     for (name, shade) in [("sunrise.png", 0u8), ("sunrise-copy.png", 2)] {
         let image = image::RgbImage::from_fn(64, 48, |x, _| {
             let value = (x as u8).saturating_mul(4).saturating_add(shade);

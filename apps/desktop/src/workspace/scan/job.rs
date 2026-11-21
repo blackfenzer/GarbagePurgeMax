@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use scan_engine::{
     FileRecord, ScanEntry, ScanProgress, ScanScope, analysis_exemption, find_similar_images_with,
-    scan_entries_with_scope, verify_duplicate_group_cached, volume_space,
+    is_cloud_placeholder, scan_entries_with_scope, verify_duplicate_group_cached, volume_space,
 };
 use scan_store::SavedScan;
 
@@ -175,7 +175,7 @@ pub(in crate::workspace) fn analyze_saved(
         };
         after_size = Some(first.logical_bytes);
         let size_group = files.len() as u64;
-        files.retain(|file| analysis_exemption(&file.path, &scan.root).is_none());
+        files.retain(|file| skip_in_analysis(&file.path, &scan.root).is_none());
         progress
             .exempt_files
             .fetch_add(size_group - files.len() as u64, Ordering::Relaxed);
@@ -208,12 +208,12 @@ pub(in crate::workspace) fn analyze_saved(
             .fetch_add(size_group, Ordering::Relaxed);
     }
 
-    // Similar images, outside game libraries, app bundles and system folders.
+    // Similar images, with the same exemptions as duplicates.
     if !cancelled {
         progress.comparing_images.store(true, Ordering::Relaxed);
         let images: Vec<FileRecord> = images
             .into_iter()
-            .filter(|image| analysis_exemption(&image.path, &scan.root).is_none())
+            .filter(|image| skip_in_analysis(&image.path, &scan.root).is_none())
             .collect();
         progress.images_total.store(images.len(), Ordering::Relaxed);
         let started = Instant::now();
@@ -242,6 +242,13 @@ pub(in crate::workspace) fn analyze_saved(
         cancelled,
         first_error,
     })
+}
+
+/// Why analysis leaves `path` unread: an exempt location, or an online-only cloud file
+/// that reading would download.
+fn skip_in_analysis(path: &Path, root: &Path) -> Option<&'static str> {
+    analysis_exemption(path, root)
+        .or_else(|| is_cloud_placeholder(path).then_some("Online-only cloud file"))
 }
 
 /// Indexing then analysis in one call, as the app ran them before analysis became separate.

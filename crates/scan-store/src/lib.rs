@@ -115,6 +115,15 @@ pub struct FolderEntry {
     pub main_type: &'static str,
 }
 
+/// A shared developer cache found in a scan, such as the npm cache or Xcode DerivedData.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegenerableCache {
+    pub label: &'static str,
+    pub root: PathBuf,
+    pub files: u64,
+    pub logical_bytes: u64,
+}
+
 /// A folder's saved totals: its direct children and its file types, each largest first.
 /// Folders without indexed files, such as empty folders, do not appear.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -725,6 +734,38 @@ impl ScanStore {
             entries,
             types: largest_types_first(types),
         })
+    }
+
+    /// Shared developer caches in the scan, largest first. Their tools can rebuild them.
+    // ponytail: reads every file row per call, like `file_types`; record caches during
+    // the scan if large scans make Overview slow.
+    pub fn regenerable_caches(&self, scan_id: i64) -> rusqlite::Result<Vec<RegenerableCache>> {
+        let mut caches: Vec<RegenerableCache> = Vec::new();
+        let mut statement = self
+            .0
+            .prepare_cached("SELECT path_key, logical_bytes FROM files WHERE scan_id = ?1")?;
+        let mut rows = statement.query([scan_id])?;
+        while let Some(row) = rows.next()? {
+            let path = decode_path(row, 0)?;
+            let Some((label, root)) = scan_engine::regenerable_cache(&path) else {
+                continue;
+            };
+            let logical_bytes = unsigned_integer(row, 1)?;
+            match caches.iter_mut().find(|cache| cache.root == root) {
+                Some(cache) => {
+                    cache.files += 1;
+                    cache.logical_bytes += logical_bytes;
+                }
+                None => caches.push(RegenerableCache {
+                    label,
+                    root,
+                    files: 1,
+                    logical_bytes,
+                }),
+            }
+        }
+        caches.sort_unstable_by_key(|cache| std::cmp::Reverse(cache.logical_bytes));
+        Ok(caches)
     }
 
     /// Logical bytes by UTC year of last modification, oldest year first.

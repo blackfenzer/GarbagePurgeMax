@@ -29,6 +29,7 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl Int
         .child(wide(analysis_card(workspace, cx)))
         .child(narrow(types_card(workspace, cx)))
         .child(narrow(findings_card(workspace, cx)))
+        .child(narrow(caches_card(workspace, cx)))
         .child(narrow(scope_card(workspace, cx)))
         .child(narrow(exclusions_card(workspace, cx)));
 
@@ -355,7 +356,7 @@ fn analysis_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
                         ))
                         .child(stat(
                             progress.exempt_files.load(Ordering::Relaxed).to_string(),
-                            "skipped in games, apps and system folders",
+                            "skipped: games, caches, backups, cloud-only",
                             cx,
                         )),
                 )
@@ -603,14 +604,68 @@ fn findings_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     )
 }
 
+fn caches_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
+    let theme = cx.theme();
+    let tile = card("Regenerable developer caches", cx);
+    let Some(caches) = workspace
+        .overview
+        .data
+        .as_ref()
+        .map(|data| &data.caches)
+        .filter(|caches| !caches.is_empty())
+    else {
+        return tile.child(div().text_sm().text_color(theme.muted_foreground).child(
+            "None in the latest scan. Scan your home folder to find npm, Cargo, Gradle, Xcode \
+             and similar caches.",
+        ));
+    };
+    let total: u64 = caches.iter().map(|cache| cache.logical_bytes).sum();
+    let largest = caches[0].logical_bytes;
+    let mut tile = tile
+        .child(stat(format_bytes(total), "rebuildable by their tools", cx))
+        .child(div().text_xs().text_color(theme.muted_foreground).child(
+            "Each tool can rebuild these: for example npm cache clean --force, \
+             go clean -modcache, or deleting Xcode DerivedData. Nothing here moves files.",
+        ));
+    for cache in caches.iter().take(6) {
+        tile = tile.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .text_sm()
+                        .child(cache.label)
+                        .child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .child(format_bytes(cache.logical_bytes)),
+                        ),
+                )
+                .child(meter(
+                    fraction(cache.logical_bytes, largest),
+                    theme.primary,
+                    6.0,
+                    cx,
+                )),
+        );
+    }
+    tile
+}
+
 fn scope_card(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
     let theme = cx.theme();
     let smart = workspace.preferences.smart_scope;
     let mut tile = card("Smart scope", cx)
         .child(div().text_sm().text_color(theme.muted_foreground).child(
             "Broad scans skip dependency and build folders inside projects (node_modules, \
-             target, .venv, .git…). Choose a project folder to scan it in full. Game \
-             libraries, app bundles and system folders are sized but not checked for duplicates.",
+             target, .venv, .git, Unity Library, Unreal Intermediate…). Choose a project folder \
+             to scan it in full. Games, app bundles, system folders, disk images, device \
+             backups, developer caches and online-only cloud files are sized but never read \
+             for duplicates.",
         ))
         .child(
             Button::new("smart-scope")

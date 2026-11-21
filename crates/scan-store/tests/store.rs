@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use scan_engine::{CleanupKind, FileRecord, ScanProgress, ScanSummary, SimilarImage};
 use scan_store::{
     DuplicateEvidence, FileFilter, FileSort, FileTypeTotal, FolderEntry, FolderSummary,
-    ReviewGroup, ScanStore, SimilarImageEvidence,
+    RegenerableCache, ReviewGroup, ScanStore, SimilarImageEvidence,
 };
 
 #[test]
@@ -936,5 +936,40 @@ fn analysis_can_run_again_on_a_saved_index() -> Result<(), Box<dyn std::error::E
     assert_eq!(reopened.duplicate_group_count, 1);
     assert!(reopened.duplicates_analyzed);
     assert_eq!(reopened.progress.files, 4, "the index is untouched");
+    Ok(())
+}
+
+#[test]
+fn totals_regenerable_developer_caches() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let home = directory.path().join("home");
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(&home, 1 << 30)?;
+    for (path, bytes) in [
+        (".npm/_cacache/content-v2/a", 40),
+        (".npm/_cacache/index-v5/b", 2),
+        (".cargo/registry/cache/c.crate", 100),
+        ("Documents/notes.txt", 5),
+    ] {
+        writer.insert_file(&file(home.join(path).to_str().unwrap(), bytes))?;
+    }
+    let scan = writer.finish(&summary(4, false), 0)?;
+    assert_eq!(
+        store.regenerable_caches(scan.id)?,
+        [
+            RegenerableCache {
+                label: "Cargo registry",
+                root: home.join(".cargo/registry"),
+                files: 1,
+                logical_bytes: 100,
+            },
+            RegenerableCache {
+                label: "npm cache",
+                root: home.join(".npm/_cacache"),
+                files: 2,
+                logical_bytes: 42,
+            },
+        ]
+    );
     Ok(())
 }

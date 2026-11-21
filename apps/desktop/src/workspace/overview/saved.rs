@@ -6,7 +6,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::{AppContext as _, Context, Div, ParentElement as _, Styled as _, Task, div, px};
-use scan_store::{FileTypeTotal, SavedScan, ScanStore};
+use scan_store::{FileTypeTotal, RegenerableCache, SavedScan, ScanStore};
 
 use crate::workspace::{Page, Workspace, scan::format_bytes, storage};
 
@@ -14,15 +14,17 @@ const RECENT_SCAN_LIMIT: u32 = 5;
 
 #[derive(Default)]
 pub(in crate::workspace) struct SavedOverview {
-    pub(super) data: Option<Snapshot>,
+    pub(in crate::workspace) data: Option<Snapshot>,
     pub(super) loading: bool,
     pub(super) error: Option<String>,
     request: Option<Task<()>>,
 }
 
-pub(super) struct Snapshot {
+pub(in crate::workspace) struct Snapshot {
     pub scans: Vec<SavedScan>,
     pub file_types: Vec<FileTypeTotal>,
+    /// Shared developer caches in the latest scan, largest first.
+    pub caches: Vec<RegenerableCache>,
 }
 
 impl SavedOverview {
@@ -55,13 +57,22 @@ fn load_snapshot(store: &ScanStore) -> io::Result<Snapshot> {
     let scans = store
         .scans(RECENT_SCAN_LIMIT, 0)
         .map_err(io::Error::other)?;
-    let file_types = scans
-        .first()
-        .map(|scan| store.file_types(scan.id))
+    let latest = scans.first().map(|scan| scan.id);
+    let file_types = latest
+        .map(|scan| store.file_types(scan))
         .transpose()
         .map_err(io::Error::other)?
         .unwrap_or_default();
-    Ok(Snapshot { scans, file_types })
+    let caches = latest
+        .map(|scan| store.regenerable_caches(scan))
+        .transpose()
+        .map_err(io::Error::other)?
+        .unwrap_or_default();
+    Ok(Snapshot {
+        scans,
+        file_types,
+        caches,
+    })
 }
 
 pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {

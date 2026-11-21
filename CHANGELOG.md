@@ -2,6 +2,8 @@
 
 ## Smart scope and background analysis — 2026-11-21
 
+- Smart scope also skips web, mobile, Ruby, Elixir, Haskell, Zig, CMake and game-engine (Unity, Unreal, Godot) generated folders; analysis never reads online-only cloud files, disk images, device backups, Photos libraries, Wine prefixes or more game data.
+- Added a Regenerable developer caches card (npm, Cargo, Gradle, Maven, pip, Go, Homebrew, Xcode, Android and more).
 - Added smart scan scope: broad scans skip project dependencies, build output and Git object stores; a chosen Git project scans in full; game libraries, app bundles and system folders are sized but not analysed for duplicates.
 - Duplicate and similar-image analysis now runs after the index is saved, with live progress, cancel, run again, a configurable image-worker count and an auto-analyze switch.
 - Rebuilt Overview as a bento dashboard with charts and stat tiles.

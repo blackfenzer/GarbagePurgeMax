@@ -24,7 +24,10 @@ pub use duplicates::{
 pub use file_types::{FILE_TYPES, OTHER_FILE_TYPE, file_type};
 pub use hash_cache::{HashCache, HashStage};
 pub use risk::{RiskAssessment, RiskTier, assess_risk};
-pub use scan_scope::{ScanScope, analysis_exemption, inside_git_project, project_internals};
+pub use scan_scope::{
+    ScanScope, analysis_exemption, inside_git_project, is_cloud_placeholder, project_internals,
+    regenerable_cache,
+};
 pub use similar_images::{
     DEFAULT_IMAGE_WORKERS, SIMILAR_IMAGE_DISTANCE, SimilarImage, SimilarImageAnalysis,
     SimilarImageGroup, difference_hash, find_similar_images, find_similar_images_with,

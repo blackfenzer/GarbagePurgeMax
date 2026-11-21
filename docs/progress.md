@@ -1,5 +1,23 @@
 # Development progress
 
+## 2026-11-21 · Wider smart scope, cloud placeholders and developer caches
+
+Extended `scan_scope.rs` with the agreed rule set:
+
+- **Project folders skipped in broad scans** now also cover `bower_components`, `jspm_packages`, `.vite`, `.expo`, `.docusaurus`, `.angular`, `.yarn/cache`, Python `.nox`/`.hypothesis`/`.eggs`/`.ipynb_checkpoints`/`*.egg-info`, Android `.cxx`, `.kotlin`, Flutter `build` (beside `pubspec.yaml`), Ruby `vendor` (beside `Gemfile`), Elixir `_build`/`deps` (beside `mix.exs`), Haskell `.stack-work`, Zig caches, CMake output, and game-engine projects: Unity `Library`/`Temp`/`Obj`/`Logs` beside `ProjectSettings`, Unreal `Intermediate`/`DerivedDataCache`/`Saved` beside a `.uproject`, Godot `.godot`/`.import` beside `project.godot`. Generic `dist`/`build`/`out` without a marker stay indexed.
+- **Left out of duplicate and similar-image analysis** (still sized): online-only cloud files (macOS `SF_DATALESS`; Windows offline/recall attributes) so analysis never triggers downloads; more game data (Rockstar, Heroic, Lutris, `.minecraft`, shader caches, Wine/CrossOver/Proton `drive_c` prefixes); VM and disk images (`.vmdk`, `.vhd(x)`, `.qcow2`, `.vdi`, `.hdd`, `.sparseimage`, `.sparsebundle`, `Docker.raw`); iOS device backups (`MobileSync/Backup`); Photos libraries; and shared developer caches.
+- **Regenerable developer caches** (`regenerable_cache`, `ScanStore::regenerable_caches`): npm, pnpm, Yarn, Cargo registry and Git checkouts, Gradle, Maven, pip, Go modules, Homebrew downloads, Xcode DerivedData and device support, simulator caches, Android system images. Overview shows a card with their total and the largest caches.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` (and the app with `--features ui-smoke`) | Passed |
+| `cargo test --locked --workspace` | **110 passed**, 0 failed, 7 ignored (new: engine/language folders, exemptions, cache roots, cache totals) |
+| `cargo test --locked -p storage-clinic --features ui-smoke --test ui_smoke` | Passed; now also checks Overview found the fixture's npm cache |
+| `sh .github/scripts/clippy-windows.sh` | Passed |
+
+**Not verified:** real iCloud/OneDrive placeholder files (the flags are read from the OS but no placeholder fixture exists), Windows and Linux cache locations on real machines, and how large real caches look on a developer's home folder.
+
 ## 2026-11-21 · Smart scope, separate analysis, bento Overview, resizable Amber Deck
 
 **Smart scope** (`scan-engine/src/scan_scope.rs`, on by default). A broad scan no longer indexes regenerable project internals: `.git`, `node_modules`, web build caches, Python caches and virtual environments (with `pyvenv.cfg`), Rust `target` (beside `Cargo.toml`), Gradle, CocoaPods, vendored Go/PHP, Terraform and .NET `bin`/`obj` (beside a project file). Choosing a folder inside a Git project scans it in full. Each skipped folder is reported (`ScanEntry::ScopedOut`) and counted in Overview. Game libraries (Steam, Epic, GOG, Xbox, Riot, EA, Ubisoft, Battle.net), app bundles and system folders below the chosen folder are indexed for size but left out of duplicate and similar-image analysis. Smart scope can be turned off in Overview.
