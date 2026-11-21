@@ -122,11 +122,12 @@ impl ScanStore {
             .create(true)
             .truncate(false)
             .open(parent.join("cleanup.lock"))?;
-        lock.try_lock().map_err(|_| {
-            io::Error::new(
+        lock.try_lock().map_err(|error| match error {
+            std::fs::TryLockError::WouldBlock => io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "Another cleanup or restore operation is active",
-            )
+            ),
+            std::fs::TryLockError::Error(error) => error,
         })?;
         // FULL synchronizes intent/receipts before another filesystem action is allowed.
         self.0

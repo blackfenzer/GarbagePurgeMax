@@ -95,3 +95,46 @@ fn native_trash_round_trip() -> io::Result<()> {
     );
     Ok(())
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_restore_refuses_a_collision_even_without_the_precheck() -> io::Result<()> {
+    use cleanup_engine::{NativeTrash, TrashBackend, TrashReceipt, restore_checked};
+    let temporary = tempfile::tempdir()?;
+    let root = temporary.path().canonicalize()?;
+    let source = root.join("fixture-trash-item");
+    let destination = root.join("occupied");
+    fs::write(&source, b"original")?;
+    fs::write(&destination, b"preserve destination")?;
+    let cancel = AtomicBool::new(false);
+    let proof = inspect(&source, &cancel)?;
+    let receipt = TrashReceipt {
+        identifier: source.clone(),
+        path: source.clone(),
+    };
+    // Call the native primitive directly: an intervening destination must never be replaced.
+    assert!(NativeTrash.restore(&receipt, &destination).is_err());
+    assert_eq!(fs::read(&destination)?, b"preserve destination");
+    assert_eq!(fs::read(&source)?, b"original");
+    let unoccupied = root.join("restored");
+    restore_checked(&NativeTrash, &receipt, &unoccupied, &proof, &cancel)?;
+    assert_eq!(fs::read(unoccupied)?, b"original");
+    assert!(!source.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn sparse_file_allocation_uses_blocks_instead_of_logical_length() -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().canonicalize()?.join("sparse.tmp");
+    fs::File::create(&path)?.set_len(1024 * 1024)?;
+    let proof = inspect(&path, &AtomicBool::new(false))?;
+    assert_eq!(proof.logical_bytes, 1024 * 1024);
+    assert_eq!(
+        proof.allocated_bytes,
+        fs::metadata(path)?.blocks().checked_mul(512)
+    );
+    Ok(())
+}

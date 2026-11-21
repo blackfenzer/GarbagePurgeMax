@@ -31,17 +31,15 @@ pub(super) fn decode_path(row: &Row<'_>, column: usize) -> rusqlite::Result<Path
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt;
-        let words = bytes.chunks_exact(2);
-        if !words.remainder().is_empty() {
+        let (words, remainder) = bytes.as_chunks::<2>();
+        if !remainder.is_empty() {
             return Err(Error::FromSqlConversionFailure(
                 column,
                 Type::Blob,
                 io::Error::new(io::ErrorKind::InvalidData, "invalid Windows path").into(),
             ));
         }
-        let words: Vec<_> = words
-            .map(|word| u16::from_le_bytes([word[0], word[1]]))
-            .collect();
+        let words: Vec<_> = words.iter().copied().map(u16::from_le_bytes).collect();
         Ok(std::ffi::OsString::from_wide(&words).into())
     }
 }

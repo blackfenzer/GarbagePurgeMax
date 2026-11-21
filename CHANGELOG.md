@@ -1,5 +1,9 @@
 # Changelog
 
+## Design study — 2026-11-18
+
+- Added a self-contained website with five distinct interactive workspace layouts, simulated review/cleanup/recovery, comparison notes and saved favorites. Thirteen Node tests pass; real-browser visual acceptance and hosted publication are blocked by this environment. Native desktop UI is unchanged.
+
 ## 0.3.0 — development, 2026-11-18
 
 ### Added
@@ -10,7 +14,7 @@
 - Logical-size and allocated-size evidence kept separate from zero expected immediate reclamation and observed volume-space changes. Protected paths, hard links and detected cloud placeholders are blocked.
 - Disposable-fixture coverage for changed items, keeper preservation, cancellation, restore conflicts, interruptions, exclusions and journal-write failures.
 
-Native acceptance is pending: the macOS Trash fixture was blocked by filesystem permissions; Windows build/runtime and current interactive flows are unverified. See docs/progress.md for final automated results.
+Verified on Apple Silicon: 98 Rust, 8 schema and 14 packaging tests; formatting, strict Clippy, debug/release builds and the v0.3.0 archive verifier pass. The native no-overwrite restore primitive passes disposable-file tests. Native acceptance is pending: the macOS Trash fixture was blocked by filesystem permissions; Windows build/runtime and current interactive flows are unverified. See docs/progress.md.
 
 ## Earlier development work
 

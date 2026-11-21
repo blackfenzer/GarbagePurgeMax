@@ -1,5 +1,59 @@
 # Development progress
 
+## 2026-11-21 · Windows CI lint repair
+
+Windows CI had failed at Clippy since `7c4352d`, so its schema, package, test and build steps were skipped for three pushes. Two Windows-only lints were the cause: `chunks_exact(2)` in scan-store's Windows path decoding (now `as_chunks::<2>()`), and a needless `&format!` in the Windows Recycle Bin restore error. `.github/scripts/clippy-windows.sh` now reproduces the CI lint from macOS using placeholder C and resource compilers; Clippy does not link, so this checks Windows code paths without a Windows machine but proves nothing about Windows builds or behavior.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `sh .github/scripts/clippy-windows.sh` | Passed (was 2 errors) |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
+| `cargo test --locked --workspace` | **98 passed**, 0 failed, 6 ignored |
+
+**Pending:** a Windows CI run on the pushed fix, which will also run Windows tests and packaging for the first time since v0.2.
+
+## 2026-11-18 · Five-layout website study
+
+Added `design-lab/` as a separate, self-contained interactive website for later design review. Workbench starts from the user's preferred dense rox analysis pattern; Harbor, Atlas, Focus and Ledger change the layout structure as well as palette. The study reviewed local rox screenshots, GPUI's official showcase and Krokiet screenshot previews. Sources, tokens, tradeoffs and suggested native mappings are recorded in `design-lab/DESIGN.md`.
+
+The website supports sample-file search/filter/sort, inspection, kept-copy selection, queue confirmation, simulated movement and restore, cancellable sample scans, layout comparison and locally saved favorites. It does not access the filesystem or alter the Rust desktop UI. `design-lab/dist/index.html` opens directly without a server or external dependencies.
+
+**13 Node tests passed**: domain invariants, self-contained build, all five layout renderers and all 25 navigation combinations, confirmation/restore/reset events, cancellation and references/favorites. Tests execute templates/events with a minimal DOM boundary; this is not real browser acceptance. Preview socket binding was denied, the browser tool's profile was already in use, and a separate headless Chrome launch failed. Visual/mobile/keyboard/screen-reader acceptance remains pending.
+
+Private Site registration succeeded, but source synchronization failed with DNS resolution for `git.chatgpt-team.site`. The Site identity is retained in the prototype's `.openai/hosting.json` for a future retry. No live deployment or screenshot is claimed. The usable deliverable is the portable HTML website in the repository.
+
+
+
+## 2026-11-18 · v0.3 reviewed cleanup and recovery
+
+Implemented the full v0.3 feature scope in the 0.3.0 development build: persistent Cleanup Queue and paged Recovery History, selected kept copies for exact duplicates, separate move/restore confirmations, current-exclusion checks, fresh native identity/version/hash and byte validation, native macOS Trash and Windows Recycle Bin adapters, no-overwrite restore, cancellation and per-item outcomes. Scans remain read-only. Protected locations, linked paths, hard links and detected cloud placeholders are blocked. Known protected browser caches remain ineligible.
+
+A separate `cleanup-engine` crate owns filesystem evidence and native adapters without GPUI/SQLite. The desktop coordinates background work; scan-store owns migration 006 and the durable state machine. OS locking serializes cleanup across processes; synchronous FULL persists intent before native actions and receipts before verification. Interrupted moving/restoring items become Needs inspection and never retry automatically. Recovery records outlive scan removal. Read-only reconciliation verifies a manually restored original before releasing kept-copy reservations. SQLite write failures stop filesystem actions or stop further batch work as appropriate.
+
+Logical size, potential allocated-size upper bounds, zero expected immediate release and observed volume available-space deltas are distinct. Shared allocation, snapshots, sparse/compressed files and cloud storage remain uncertain; there is no permanent deletion or empty-Trash operation. Folder picker, scans and exclusion edits cannot overlap mutation controls in one workspace. See [the recovery contract](cleanup-recovery.md) for race and durability limits.
+
+Verified on **macOS 27.2 / Apple Silicon, Rust 1.100.0**:
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo test --locked --workspace` | **98 passed**, 0 failed; 6 ignored (5 opt-in benchmarks and 1 native Trash test) |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
+| `cargo build --locked -p storage-clinic` | Passed |
+| `python3 -B crates/scan-store/tests/test_schema.py` | **8 passed**, including v5→v6 history preservation and cleanup constraints |
+| `python3 -B .github/scripts/test_package.py` | **14 passed** |
+| Release build and macOS ZIP generation | Passed; `target/packages/Storage-Clinic-0.3.0-macos-arm64.zip` |
+| Standalone archive verification, expected version 0.3.0 / macos-arm64 | Passed |
+| Native macOS no-overwrite restore primitive, disposable directory | Passed, including direct native collision rejection and successful verified rename |
+| Opt-in real macOS Trash round trip | **Attempted, blocked**: Foundation reported permission denied moving the generated fixture; no receipt or successful round trip |
+
+The release toolchain still reports the existing `rust-objcopy` missing `@rpath/libLLVM.dylib` warning during debug-symbol stripping. Cargo returns success and the archive's payload, architecture, manifest and launch metadata verify. Signing/notarization and packaged launch remain unverified.
+
+New tests cover persistence, distinct keeper reservations across trashed history, source/keeper changes, late folder entries, symlink replacement, read-only/hard-linked sources, sparse allocation evidence, exact confirmation membership, cancellation, partial native failure, missing/changed receipts, lock contention, abandoned intents, occupied restore destinations, exclusions added after queueing, malformed exclusion settings, and injected intent/receipt write failures. Ordinary pipeline tests use an injected adapter that moves only disposable fixture files; they do not establish OS Trash acceptance. No new benchmark result is claimed.
+
+**Deferred native checks:** only the Apple Silicon Rust target is installed. Windows compilation, Windows 11 Recycle Bin/restore behavior, disabled/unavailable recycling, native crash/restart, mounted volumes and the complete GUI flow still require acceptance testing. The current tools do not provide working desktop capture; the previous failure was ScreenCaptureKit -3811. The platform checklist remains open in [tasks](tasks.md) and [release](release.md). The source implementation is complete; cross-platform release acceptance is not.
+
 ## 2026-11-17 · Curated read-only browser cache evidence
 
 Implemented the initial app cache policy task for Google Chrome stable and Chromium HTTP caches. The engine matches only documented default native layouts under macOS `/Users/<account>/Library/Caches` or Windows drive-rooted `Users/<account>/AppData/Local`; custom roots, other browsers/channels, UNC paths, and sibling profile data are excluded. Known path literals are compared without converting account, profile, or filename identity to lossy text. Parent traversal is rejected. Policy sources and exact limits are recorded in [cache policies](cache-policies.md).

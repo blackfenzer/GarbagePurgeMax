@@ -73,14 +73,14 @@ To generate the synthetic tree used for the desktop smoke test, run `cargo run -
 
 | Platform | Build and tests | Desktop smoke test |
 | --- | --- | --- |
-| macOS 27.2, Apple Silicon | Rustfmt, strict Clippy, 78 Rust tests, debug/release builds; 6 schema and 14 packaging tests passed | Earlier baseline passed; current UI and packaged launch blocked by desktop capture failure |
+| macOS 27.2, Apple Silicon | Rustfmt, strict Clippy, 98 Rust tests, debug/release builds; 8 schema and 14 packaging tests passed | Native no-overwrite rename test passed; real Trash round trip blocked by permissions; current GUI/package launch unverified |
 | Windows x64 | Earlier baseline passed on `windows-2022`; current changes await CI | Needs testing on Windows 11 |
 
 The November 17 measurements scanned 100,000 mostly unique files in 3.61 / 3.62 s and duplicate-heavy files in 7.76 / 7.93 s, with about 17.3 MiB peak process RSS. Review queries stayed below 49 ms and cancellation returned within 88 ms. Phase diagnostics identify file verification as the largest cost; earlier slower results did not reproduce, so no general speedup is claimed. A separate 20,000-file size bucket passed three scans at 1.04–1.08 s and about 26.2 MiB peak RSS. The earlier 256 MiB duplicate fixture improved from 0.167 s to 0.035 s using revalidated full hashes. See [benchmarks](docs/benchmarks.md) for methods, prior results, and limits, and [architecture](docs/architecture.md) for the design.
 
-- Scans read files and never change them. Cleanup arrives in v0.3.
+- Scans read files and never change them. v0.3 cleanup requires a separately reviewed queue and explicit confirmation.
 - File types come from extensions only. Duplicates are exact byte matches. Similar images use a 64-bit difference hash, so heavy crops, mirrored, and rotated copies are not found, and HEIC and RAW photos are not read.
-- Logical sizes include every hard-linked name. Duplicate verification counts each file identity once. Physical space on disk is not estimated yet.
+- Logical sizes include every hard-linked name. Duplicate verification counts each file identity once. Cleanup reports allocation evidence separately from logical bytes, with explicit uncertainty and no claim that moving to Trash frees space.
 - WAL keeps saved results readable during indexing. Each scan holds the database write lock until it finishes, so a second app instance cannot save a scan at the same time. The app quits when its window closes.
 - Older scans need a new scan to add duplicate findings. The app shows the first scan error alongside the error counts.
 - Images over 64 MiB encoded size or 16,384 pixels per side are skipped. Decoder allocations have a best-effort 64 MiB budget per worker, with at most two workers. The similarity threshold still needs testing on real photos.
@@ -90,4 +90,8 @@ The November 17 measurements scanned 100,000 mostly unique files in 3.61 / 3.62 
 
 ## Release and demo checklist
 
-See [the release checklist](docs/release.md) for exact checks, the read-only demo sequence, and outstanding platform and distribution gates. This repository is a working read-only analysis application; Trash/Recycle Bin actions and recovery are future milestones, not enabled capabilities.
+See [the release checklist](docs/release.md) for exact checks, disposable cleanup/recovery fixtures, and outstanding platform and distribution gates. The v0.3 implementation is ready for native acceptance testing; it is not a fully validated cross-platform release.
+
+## Layout design studies
+
+Open [the five-layout website](design-lab/dist/index.html) directly in a browser to compare Workbench, Harbor, Atlas, Focus and Ledger. All interactions use sample data. Workbench is the initial direction for dense analysis; each alternative changes the workspace structure. [Design notes and references](design-lab/DESIGN.md) explain the tradeoffs. The native application layout is unchanged.

@@ -153,9 +153,9 @@ fn reject_placeholder(metadata: &Metadata) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::macos::fs::MetadataExt;
-        // Darwin UF_DATALESS: metadata exists but file contents require provider hydration.
-        const UF_DATALESS: u32 = 0x40000000;
-        if metadata.st_flags() & UF_DATALESS != 0 {
+        // Darwin SF_DATALESS: metadata exists but file contents require provider hydration.
+        const SF_DATALESS: u32 = 0x40000000;
+        if metadata.st_flags() & SF_DATALESS != 0 {
             return Err(io::Error::other(
                 "Dataless cloud items are excluded from cleanup",
             ));

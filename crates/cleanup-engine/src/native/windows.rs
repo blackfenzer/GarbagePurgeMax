@@ -107,7 +107,7 @@ impl TrashBackend for NativeTrash {
             if result.path != destination {
                 return Err(windows::core::Error::new(
                     E_FAIL,
-                    &format!(
+                    format!(
                         "Windows restored to {}; inspect the renamed item",
                         result.path.display()
                     ),
