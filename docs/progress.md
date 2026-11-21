@@ -1,5 +1,19 @@
 # Development progress
 
+## 2026-11-21 · Space Map and two themes
+
+Added a **Space Map** page and a saved **Workbench / Amber Deck** theme switch, following the canvas design. `ScanStore::folder_summary` totals a folder's direct children from saved native paths (bytes, files, main type) plus the folder's type breakdown; like `file_types` it reads every file row per call, marked with a ponytail note for per-folder totals saved at scan time if large scans need it. The page shows a WizTree-style list (up to 300 rows) with % of folder bars, a squarified treemap (up to 60 blocks), breadcrumbs, Up one folder, and an inspector. Both themes are GPUI Kit dark theme configs in `apps/desktop/themes/storage-clinic.json`; the choice is saved as a `theme` file beside `scans.sqlite3`. Amber Deck currently changes colours only; its rox-style layout and footer graphs are the next task.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
+| `cargo test --locked --workspace` | **100 passed**, 0 failed, 6 ignored (new: folder totals per level, treemap tiling) |
+| `sh .github/scripts/clippy-windows.sh` | Passed |
+| `cargo run --locked -p storage-clinic` | Launched; no theme load errors logged |
+
+**Not verified:** visual review of both themes and the Space Map page (no screen capture available to the agent), Windows behaviour, and folder totals speed on million-file scans. Windows CI's workspace tests failed on `0a202d2` before this work; the failing test is unknown because job logs need a GitHub login.
+
 ## 2026-11-21 · Windows CI lint repair
 
 Windows CI had failed at Clippy since `7c4352d`, so its schema, package, test and build steps were skipped for three pushes. Two Windows-only lints were the cause: `chunks_exact(2)` in scan-store's Windows path decoding (now `as_chunks::<2>()`), and a needless `&format!` in the Windows Recycle Bin restore error. `.github/scripts/clippy-windows.sh` now reproduces the CI lint from macOS using placeholder C and resource compilers; Clippy does not link, so this checks Windows code paths without a Windows machine but proves nothing about Windows builds or behavior.

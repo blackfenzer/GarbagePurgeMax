@@ -4,6 +4,7 @@ mod hash_cache;
 pub use cleanup::{CleanupItem, CleanupSession, CleanupState, QueueEntry};
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -101,6 +102,27 @@ pub struct FileTypeTotal {
     pub file_type: &'static str,
     pub files: u64,
     pub logical_bytes: u64,
+}
+
+/// One direct child of a folder, totalled over every indexed file beneath it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FolderEntry {
+    pub name: OsString,
+    pub is_folder: bool,
+    pub files: u64,
+    pub logical_bytes: u64,
+    /// The file type holding the most logical bytes beneath this entry.
+    pub main_type: &'static str,
+}
+
+/// A folder's saved totals: its direct children and its file types, each largest first.
+/// Folders without indexed files, such as empty folders, do not appear.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FolderSummary {
+    pub files: u64,
+    pub logical_bytes: u64,
+    pub entries: Vec<FolderEntry>,
+    pub types: Vec<FileTypeTotal>,
 }
 
 #[derive(Clone, Debug)]
@@ -557,15 +579,93 @@ impl ScanStore {
             total.files += 1;
             total.logical_bytes += unsigned_integer(row, 1)?;
         }
-        let mut totals: Vec<_> = totals.into_values().collect();
-        totals.sort_unstable_by(|left, right| {
+        Ok(largest_types_first(totals))
+    }
+
+    /// Totals the direct children of `folder` from saved native paths, for the Space Map.
+    /// Cancelled scans cover the indexed part.
+    // ponytail: reads every file row per call, like `file_types`; save per-folder totals
+    // during the scan if large scans make navigation slow.
+    pub fn folder_summary(&self, scan_id: i64, folder: &Path) -> rusqlite::Result<FolderSummary> {
+        #[derive(Default)]
+        struct ChildTotals {
+            is_folder: bool,
+            files: u64,
+            logical_bytes: u64,
+            bytes_by_type: HashMap<&'static str, u64>,
+        }
+
+        let mut children: HashMap<OsString, ChildTotals> = HashMap::new();
+        let mut types: HashMap<&'static str, FileTypeTotal> = HashMap::new();
+        let mut statement = self
+            .0
+            .prepare_cached("SELECT path_key, logical_bytes FROM files WHERE scan_id = ?1")?;
+        let mut rows = statement.query([scan_id])?;
+        while let Some(row) = rows.next()? {
+            let path = decode_path(row, 0)?;
+            let Ok(inside) = path.strip_prefix(folder) else {
+                continue;
+            };
+            let mut components = inside.components();
+            let Some(first) = components.next() else {
+                continue;
+            };
+            let logical_bytes = unsigned_integer(row, 1)?;
+            let file_type = file_type(&path);
+
+            let child = children.entry(first.as_os_str().to_owned()).or_default();
+            child.is_folder |= components.next().is_some();
+            child.files += 1;
+            child.logical_bytes += logical_bytes;
+            *child.bytes_by_type.entry(file_type).or_default() += logical_bytes;
+
+            let total = types.entry(file_type).or_insert(FileTypeTotal {
+                file_type,
+                files: 0,
+                logical_bytes: 0,
+            });
+            total.files += 1;
+            total.logical_bytes += logical_bytes;
+        }
+
+        let mut entries: Vec<_> = children
+            .into_iter()
+            .map(|(name, child)| FolderEntry {
+                main_type: child
+                    .bytes_by_type
+                    .into_iter()
+                    .max_by(|left, right| left.1.cmp(&right.1).then_with(|| right.0.cmp(left.0)))
+                    .map_or(scan_engine::OTHER_FILE_TYPE, |(file_type, _)| file_type),
+                name,
+                is_folder: child.is_folder,
+                files: child.files,
+                logical_bytes: child.logical_bytes,
+            })
+            .collect();
+        entries.sort_unstable_by(|left, right| {
             right
                 .logical_bytes
                 .cmp(&left.logical_bytes)
-                .then_with(|| left.file_type.cmp(right.file_type))
+                .then_with(|| left.name.cmp(&right.name))
         });
-        Ok(totals)
+        Ok(FolderSummary {
+            files: entries.iter().map(|entry| entry.files).sum(),
+            logical_bytes: entries.iter().map(|entry| entry.logical_bytes).sum(),
+            entries,
+            types: largest_types_first(types),
+        })
     }
+}
+
+fn largest_types_first(totals: HashMap<&'static str, FileTypeTotal>) -> Vec<FileTypeTotal> {
+    let mut totals: Vec<_> = totals.into_values().collect();
+    totals.sort_unstable_by(|left, right| {
+        right
+            .logical_bytes
+            .cmp(&left.logical_bytes)
+            .then_with(|| left.file_type.cmp(right.file_type))
+    });
+    totals
 }
 
 pub struct ScanWriter<'a> {

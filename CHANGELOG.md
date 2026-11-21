@@ -1,5 +1,11 @@
 # Changelog
 
+## Space Map and themes — 2026-11-21
+
+- Added Space Map: a saved scan's folders by logical size with % of folder, file counts, main file type, a squarified treemap, breadcrumbs and an inspector. It reads saved paths only and moves nothing.
+- Added a sidebar theme switch between Workbench (dark slate and lavender) and Amber Deck (near-black and amber). The choice is saved next to the scan database.
+- Fixed two Windows-only Clippy errors that had failed Windows CI since `7c4352d`, and added `.github/scripts/clippy-windows.sh` to lint Windows code from macOS.
+
 ## Design study — 2026-11-18
 
 - Added a self-contained website with five distinct interactive workspace layouts, simulated review/cleanup/recovery, comparison notes and saved favorites. Thirteen Node tests pass; real-browser visual acceptance and hosted publication are blocked by this environment. Native desktop UI is unchanged.

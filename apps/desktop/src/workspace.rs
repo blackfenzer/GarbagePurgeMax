@@ -5,19 +5,24 @@ mod overview;
 mod results;
 mod review;
 mod scan;
+mod space_map;
 mod storage;
+mod theme;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName,
-    sidebar::{Sidebar, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
+    button::Button,
+    sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
 };
 use gpui_kit::{Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div, px};
+use theme::AppTheme;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
     #[default]
     Overview,
+    SpaceMap,
     Results,
     History,
     Review,
@@ -34,12 +39,15 @@ pub(crate) struct Workspace {
     overview: overview::SavedOverview,
     review: review::Review,
     cleanup: cleanup::Cleanup,
+    space_map: space_map::SpaceMap,
+    theme: AppTheme,
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let menu = SidebarMenu::new()
             .child(self.navigation_item(Page::Overview, "Overview", IconName::LayoutDashboard, cx))
+            .child(self.navigation_item(Page::SpaceMap, "Space Map", IconName::ChartPie, cx))
             .child(self.navigation_item(Page::Results, "Scan Results", IconName::FolderOpen, cx))
             .child(self.navigation_item(Page::Review, "Review", IconName::Copy, cx))
             .child(self.navigation_item(Page::History, "Scan History", IconName::Calendar, cx))
@@ -62,11 +70,13 @@ impl Render for Workspace {
                     .header(
                         SidebarHeader::new().child(div().font_semibold().child("Storage Clinic")),
                     )
-                    .child(SidebarGroup::new("Storage").child(menu)),
+                    .child(SidebarGroup::new("Storage").child(menu))
+                    .footer(self.theme_switch(cx)),
             )
             .child(
                 div().flex_1().min_w(px(0.0)).child(match self.page {
                     Page::Overview => overview::render(self, cx).into_any_element(),
+                    Page::SpaceMap => self.space_map.render(cx).into_any_element(),
                     Page::Results => self
                         .results
                         .render(self.scan.report.as_ref(), cx)
@@ -103,9 +113,13 @@ impl Render for Workspace {
 
 impl Workspace {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let theme = AppTheme::saved();
+        theme.apply(cx);
         let mut overview = overview::SavedOverview::default();
         overview.load(cx);
         Self {
+            space_map: space_map::SpaceMap::default(),
+            theme,
             page: Page::default(),
             exclusions: exclusions::Exclusions::load(cx),
             results: results::Results::new(window, cx),
@@ -115,6 +129,30 @@ impl Workspace {
             review: review::Review::default(),
             cleanup: cleanup::Cleanup::default(),
         }
+    }
+
+    fn theme_switch(&self, cx: &Context<Self>) -> SidebarFooter {
+        let mut choices = div().flex().flex_col().gap_1().w_full().child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("Theme"),
+        );
+        for theme in AppTheme::ALL {
+            choices = choices.child(
+                Button::new(theme.label())
+                    .small()
+                    .w_full()
+                    .label(theme.label())
+                    .selected(self.theme == theme)
+                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                        workspace.theme = theme;
+                        theme.apply(cx);
+                        cx.notify();
+                    })),
+            );
+        }
+        SidebarFooter::new().child(choices)
     }
 
     fn navigation_item(
@@ -136,6 +174,10 @@ impl Workspace {
                         workspace.review.open(scan, cx);
                     }
                     Page::Overview => workspace.overview.load(cx),
+                    Page::SpaceMap => {
+                        let scan = workspace.results.saved_scan().cloned();
+                        workspace.space_map.open(scan, cx);
+                    }
                     Page::Results => {}
                     Page::Cleanup | Page::Recovery => workspace.cleanup.load(0, cx),
                 }

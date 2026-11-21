@@ -5,8 +5,8 @@ use std::time::{Duration, UNIX_EPOCH};
 use rusqlite::Connection;
 use scan_engine::{CleanupKind, FileRecord, ScanProgress, ScanSummary, SimilarImage};
 use scan_store::{
-    DuplicateEvidence, FileFilter, FileSort, FileTypeTotal, ReviewGroup, ScanStore,
-    SimilarImageEvidence,
+    DuplicateEvidence, FileFilter, FileSort, FileTypeTotal, FolderEntry, FolderSummary,
+    ReviewGroup, ScanStore, SimilarImageEvidence,
 };
 
 #[test]
@@ -332,6 +332,58 @@ fn distinguishes_completed_analysis_with_zero_duplicates() -> Result<(), Box<dyn
     let scans = store.scans(10, 0)?;
     assert!(scans[0].duplicates_analyzed);
     assert_eq!(scans[0].duplicate_group_count, 0);
+    Ok(())
+}
+
+#[test]
+fn totals_each_folder_level_for_the_space_map() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root");
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(&root, 1)?;
+    for (path, bytes) in [
+        ("Movies/trip.mov", 30),
+        ("Movies/cover.jpg", 2),
+        ("Movies/Old/clip.mp4", 8),
+        ("notes.txt", 5),
+        ("Pictures/a.png", 12),
+    ] {
+        writer.insert_file(&file(root.join(path).to_str().unwrap(), bytes))?;
+    }
+    let scan = writer.finish(&summary(5, false), 0)?;
+    let entry = |name: &str, is_folder, files, logical_bytes, main_type| FolderEntry {
+        name: name.into(),
+        is_folder,
+        files,
+        logical_bytes,
+        main_type,
+    };
+
+    let top = store.folder_summary(scan.id, &root)?;
+    assert_eq!((top.files, top.logical_bytes), (5, 57));
+    assert_eq!(
+        top.entries,
+        [
+            entry("Movies", true, 3, 40, "Video"),
+            entry("Pictures", true, 1, 12, "Images"),
+            entry("notes.txt", false, 1, 5, "Documents"),
+        ]
+    );
+    assert_eq!(top.types[0].file_type, "Video");
+
+    let movies = store.folder_summary(scan.id, &root.join("Movies"))?;
+    assert_eq!(
+        movies.entries,
+        [
+            entry("trip.mov", false, 1, 30, "Video"),
+            entry("Old", true, 1, 8, "Video"),
+            entry("cover.jpg", false, 1, 2, "Images"),
+        ]
+    );
+    assert_eq!(
+        store.folder_summary(scan.id, &root.join("Missing"))?,
+        FolderSummary::default()
+    );
     Ok(())
 }
 
