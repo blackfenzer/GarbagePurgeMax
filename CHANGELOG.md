@@ -3,6 +3,7 @@
 ## Space Map and themes — 2026-11-21
 
 - Added Space Map: a saved scan's folders by logical size with % of folder, file counts, main file type, a squarified treemap, breadcrumbs and an inspector. It reads saved paths only and moves nothing.
+- Added the Amber Deck layout: a top scan bar with Choose folder / Cancel, Scan again and the theme switch; a left panel (Map, Overview, Review) and a right panel (Files, Tree, Queue, Recovery, History); and a footer with size by last-modified year, a clickable strip of the current folder's entries, a small treemap and a caption.
 - Added a sidebar theme switch between Workbench (dark slate and lavender) and Amber Deck (near-black and amber). The choice is saved next to the scan database.
 - Fixed two Windows-only Clippy errors that had failed Windows CI since `7c4352d`, and added `.github/scripts/clippy-windows.sh` to lint Windows code from macOS.
 

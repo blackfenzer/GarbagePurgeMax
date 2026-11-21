@@ -34,6 +34,9 @@ pub(super) struct SpaceMap {
     loading: bool,
     error: Option<String>,
     request: Option<Task<()>>,
+    /// Logical bytes by last-modified year for the whole scan, for the Amber Deck footer.
+    years: Vec<(i32, u64)>,
+    years_request: Option<Task<()>>,
 }
 
 impl SpaceMap {
@@ -41,6 +44,9 @@ impl SpaceMap {
     pub(super) fn open(&mut self, scan: Option<SavedScan>, cx: &mut Context<Workspace>) {
         let same_scan = self.scan.as_ref().map(|scan| scan.id) == scan.as_ref().map(|scan| scan.id);
         self.scan = scan;
+        if !same_scan {
+            self.load_years(cx);
+        }
         match &self.scan {
             Some(scan) if !same_scan || self.summary.is_none() => {
                 let root = scan.root.clone();
@@ -54,6 +60,38 @@ impl SpaceMap {
                 cx.notify();
             }
         }
+    }
+
+    /// The id of the scan being shown, so another layout can tell when to reopen it.
+    pub(super) fn scan_id(&self) -> Option<i64> {
+        self.scan.as_ref().map(|scan| scan.id)
+    }
+
+    fn load_years(&mut self, cx: &mut Context<Workspace>) {
+        self.years.clear();
+        let Some(scan_id) = self.scan_id() else {
+            self.years_request = None;
+            return;
+        };
+        self.years_request = Some(cx.spawn(async move |workspace, cx| {
+            let years = cx
+                .background_spawn(async move {
+                    storage::open()?
+                        .modified_years(scan_id)
+                        .map_err(io::Error::other)
+                })
+                .await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                if workspace.space_map.scan_id() != Some(scan_id) {
+                    return;
+                }
+                match years {
+                    Ok(years) => workspace.space_map.years = years,
+                    Err(error) => log::warn!("Could not total modified years: {error}"),
+                }
+                cx.notify();
+            });
+        }));
     }
 
     fn open_folder(&mut self, folder: PathBuf, cx: &mut Context<Workspace>) {
@@ -109,7 +147,209 @@ impl SpaceMap {
         }
     }
 
+    /// The whole page: size list beside the treemap and inspector.
     pub(super) fn render(&self, cx: &Context<Workspace>) -> Div {
+        let (page, loaded) = self.frame(cx);
+        let Some((scan, summary)) = loaded else {
+            return page;
+        };
+        page.child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_4()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(self.size_list(summary, cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .w(px(TREEMAP_WIDTH))
+                        .child(self.treemap(
+                            "space-map-block",
+                            summary,
+                            TREEMAP_WIDTH,
+                            TREEMAP_HEIGHT,
+                            cx,
+                        ))
+                        .child(self.inspector(scan, summary, cx)),
+                ),
+        )
+    }
+
+    /// Treemap and inspector only, for Amber Deck's left panel.
+    pub(super) fn render_map(&self, cx: &Context<Workspace>) -> Div {
+        let (page, loaded) = self.frame(cx);
+        let Some((scan, summary)) = loaded else {
+            return page;
+        };
+        page.child(self.treemap(
+            "space-map-block",
+            summary,
+            TREEMAP_WIDTH,
+            TREEMAP_HEIGHT,
+            cx,
+        ))
+        .child(self.inspector(scan, summary, cx))
+    }
+
+    /// The size list only, for Amber Deck's right panel.
+    pub(super) fn render_tree(&self, cx: &Context<Workspace>) -> Div {
+        let (page, loaded) = self.frame(cx);
+        let Some((_, summary)) = loaded else {
+            return page;
+        };
+        page.child(self.size_list(summary, cx))
+    }
+
+    /// Amber Deck's footer: size by modified year, a strip of this folder's entries by size,
+    /// a small treemap, and a caption naming the selection.
+    pub(super) fn footer(&self, cx: &Context<Workspace>) -> Div {
+        let theme = cx.theme();
+        let summary = self
+            .summary
+            .as_ref()
+            .filter(|summary| !summary.entries.is_empty());
+        let caption = match (summary, self.selected) {
+            (Some(summary), Some(index)) => {
+                let entry = &summary.entries[index];
+                format!(
+                    "{} · {} · {} files",
+                    self.folder.join(&entry.name).display(),
+                    format_bytes(entry.logical_bytes),
+                    entry.files
+                )
+            }
+            (Some(summary), None) => format!(
+                "{} · {} · {} files",
+                self.folder.display(),
+                format_bytes(summary.logical_bytes),
+                summary.files
+            ),
+            _ if self.scan.is_none() => "No scan open. Choose a folder to scan.".into(),
+            _ => "Totalling folders…".into(),
+        };
+
+        let largest_year = self
+            .years
+            .iter()
+            .map(|(_, bytes)| *bytes)
+            .max()
+            .unwrap_or(1);
+        let mut years = div().flex().items_end().gap_1().h(px(72.0));
+        for (year, bytes) in self.years.iter().rev().take(16).rev() {
+            years = years.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_end()
+                    .flex_1()
+                    .h_full()
+                    .gap_1()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(54.0 * fraction(*bytes, largest_year)).max(px(2.0)))
+                            .bg(theme.primary),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(year.to_string()),
+                    ),
+            );
+        }
+
+        let mut strip = div().flex().items_end().gap(px(2.0)).h(px(72.0));
+        if let Some(summary) = summary {
+            let largest = summary.entries[0].logical_bytes.max(1);
+            for (index, entry) in summary.entries.iter().take(MAX_BLOCKS).enumerate() {
+                let selected = self.selected == Some(index);
+                strip = strip.child(
+                    div()
+                        .id(("space-map-strip", index))
+                        .flex_1()
+                        .min_w(px(3.0))
+                        .h(relative(fraction(entry.logical_bytes, largest).max(0.04)))
+                        .bg(if selected {
+                            theme.foreground
+                        } else {
+                            theme.primary
+                        })
+                        .opacity(if entry.is_folder { 1.0 } else { 0.7 })
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                            workspace.space_map.choose(index, cx);
+                        })),
+                );
+            }
+        }
+
+        let label = |text: &'static str| {
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .border_t_1()
+            .border_color(theme.border)
+            .bg(theme.title_bar)
+            .child(
+                div()
+                    .flex()
+                    .gap_4()
+                    .p_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .child(label("Size by last-modified year (UTC)"))
+                            .child(years)
+                            .child(label("This folder's entries by size · click to open"))
+                            .child(strip),
+                    )
+                    .when_some(summary, |row, summary| {
+                        row.child(
+                            div()
+                                .w(px(220.0))
+                                .border_2()
+                                .border_color(theme.primary)
+                                .child(self.treemap(
+                                    "space-map-mini-block",
+                                    summary,
+                                    220.0,
+                                    150.0,
+                                    cx,
+                                )),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .text_sm()
+                    .text_center()
+                    .text_ellipsis()
+                    .child(caption),
+            )
+    }
+
+    /// The header, breadcrumbs and loading state every Space Map view shares, plus the scan
+    /// and folder totals once they are loaded and non-empty.
+    fn frame(&self, cx: &Context<Workspace>) -> (Div, Option<(&SavedScan, &FolderSummary)>) {
         let muted = cx.theme().muted_foreground;
         let at_root = self
             .scan
@@ -151,9 +391,10 @@ impl SpaceMap {
                 ),
         );
         let Some(scan) = &self.scan else {
-            return page.child(div().text_sm().text_color(muted).child(
+            let hint = div().text_sm().text_color(muted).child(
                 "Run a scan, or open one from Scan History, to see which folders use the most space.",
-            ));
+            );
+            return (page.child(hint), None);
         };
 
         let page =
@@ -162,52 +403,21 @@ impl SpaceMap {
                     "Logical sizes from the saved scan, not a live view. Nothing here moves files: \
                  use Review and Cleanup Queue for that.",
                 ));
+        let status = |text: String, color| div().text_sm().text_color(color).child(text);
         if self.loading {
-            return page.child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("Totalling folders…"),
-            );
+            return (page.child(status("Totalling folders…".into(), muted)), None);
         }
         if let Some(error) = &self.error {
-            return page.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(error.clone()),
-            );
+            return (page.child(status(error.clone(), cx.theme().danger)), None);
         }
-        let Some(summary) = &self.summary else {
-            return page;
-        };
-        if summary.entries.is_empty() {
-            return page.child(
-                div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("No indexed files in this folder."),
-            );
+        match &self.summary {
+            Some(summary) if !summary.entries.is_empty() => (page, Some((scan, summary))),
+            Some(_) => (
+                page.child(status("No indexed files in this folder.".into(), muted)),
+                None,
+            ),
+            None => (page, None),
         }
-
-        page.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_4()
-                .flex_1()
-                .min_h(px(0.0))
-                .child(self.size_list(summary, cx))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_3()
-                        .w(px(TREEMAP_WIDTH))
-                        .child(self.treemap(summary, cx))
-                        .child(self.inspector(scan, summary, cx)),
-                ),
-        )
     }
 
     fn breadcrumbs(&self, scan: &SavedScan, cx: &Context<Workspace>) -> Div {
@@ -359,24 +569,32 @@ impl SpaceMap {
             .child(rows)
     }
 
-    fn treemap(&self, summary: &FolderSummary, cx: &Context<Workspace>) -> impl IntoElement {
+    /// A clickable treemap laid out for `width` × `height`; it stretches to its container's width.
+    /// `id` keeps block ids distinct when one window shows two treemaps.
+    fn treemap(
+        &self,
+        id: &'static str,
+        summary: &FolderSummary,
+        width: f32,
+        height: f32,
+        cx: &Context<Workspace>,
+    ) -> impl IntoElement {
         let theme = cx.theme();
         let entries = &summary.entries[..summary.entries.len().min(MAX_BLOCKS)];
         let sizes: Vec<u64> = entries.iter().map(|entry| entry.logical_bytes).collect();
         let mut map = div()
             .relative()
             .w_full()
-            .h(px(TREEMAP_HEIGHT))
+            .h(px(height))
             .bg(theme.muted)
             .overflow_hidden();
-        for block in treemap(&sizes, TREEMAP_WIDTH / TREEMAP_HEIGHT) {
+        for block in treemap(&sizes, width / height) {
             let entry = &entries[block.index];
             let index = block.index;
-            let labelled =
-                block.width * TREEMAP_WIDTH >= 70.0 && block.height * TREEMAP_HEIGHT >= 34.0;
+            let labelled = block.width * width >= 70.0 && block.height * height >= 34.0;
             map = map.child(
                 div()
-                    .id(("space-map-block", index))
+                    .id((id, index))
                     .absolute()
                     .left(relative(block.x))
                     .top(relative(block.y))

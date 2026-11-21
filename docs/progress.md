@@ -1,5 +1,19 @@
 # Development progress
 
+## 2026-11-21 · Amber Deck layout
+
+Choosing **Amber Deck** now switches the whole window to the rox-style layout from the canvas design instead of recolouring the sidebar layout. A top bar shows the scan status, duplicate and similar-image counts, Choose folder / Cancel scan, Scan again and the theme switch. The left panel switches between Map (treemap + inspector), Overview and Review; the right panel between Files (Scan Results), Tree (Space Map list), Queue, Recovery and History. Every panel reuses the existing page renderer, so behaviour matches Workbench. The footer graphs show logical size by UTC last-modified year (`ScanStore::modified_years`), a clickable strip of the open folder's entries by size, a small treemap, and a caption for the selection. Space Map follows the scan open in Scan Results while Amber Deck is shown.
+
+| Check (macOS 27.2, Rust 1.100.0) | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Passed |
+| `cargo clippy --locked --workspace --all-targets -- -D warnings` | Passed |
+| `cargo test --locked --workspace` | **101 passed**, 0 failed, 6 ignored (new: bytes by modified year) |
+| `sh .github/scripts/clippy-windows.sh` | Passed |
+| `cargo run --locked -p storage-clinic` | Launched; no errors logged |
+
+**Not verified:** how either layout looks (the agent has no screen capture), panel sizing at the 900×520 minimum window, and Windows behaviour.
+
 ## 2026-11-21 · Space Map and two themes
 
 Added a **Space Map** page and a saved **Workbench / Amber Deck** theme switch, following the canvas design. `ScanStore::folder_summary` totals a folder's direct children from saved native paths (bytes, files, main type) plus the folder's type breakdown; like `file_types` it reads every file row per call, marked with a ponytail note for per-folder totals saved at scan time if large scans need it. The page shows a WizTree-style list (up to 300 rows) with % of folder bars, a squarified treemap (up to 60 blocks), breadcrumbs, Up one folder, and an inspector. Both themes are GPUI Kit dark theme configs in `apps/desktop/themes/storage-clinic.json`; the choice is saved as a `theme` file beside `scans.sqlite3`. Amber Deck currently changes colours only; its rox-style layout and footer graphs are the next task.

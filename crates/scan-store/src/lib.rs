@@ -655,6 +655,23 @@ impl ScanStore {
             types: largest_types_first(types),
         })
     }
+
+    /// Logical bytes by UTC year of last modification, oldest year first.
+    /// Files without a saved modification time are left out.
+    pub fn modified_years(&self, scan_id: i64) -> rusqlite::Result<Vec<(i32, u64)>> {
+        let mut statement = self.0.prepare_cached(
+            "SELECT CAST(strftime('%Y', modified_unix_seconds, 'unixepoch') AS INTEGER) AS year,
+                    sum(logical_bytes)
+             FROM files
+             WHERE scan_id = ?1 AND modified_unix_seconds IS NOT NULL
+             GROUP BY year HAVING year IS NOT NULL ORDER BY year",
+        )?;
+        statement
+            .query_map([scan_id], |row| {
+                Ok((row.get(0)?, unsigned_integer(row, 1)?))
+            })?
+            .collect()
+    }
 }
 
 fn largest_types_first(totals: HashMap<&'static str, FileTypeTotal>) -> Vec<FileTypeTotal> {

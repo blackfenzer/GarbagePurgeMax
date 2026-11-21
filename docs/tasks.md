@@ -98,7 +98,7 @@ Current hardening includes bounded thumbnails and candidate previews, decoder li
 - [x] Build unsigned development ZIPs for native macOS arm64 and Windows x64 hosts, with layout, architecture, and failure-preservation tests. The macOS archive is built; packaged launch and actual Windows packaging still need platform testing.
 - [x] Verify completed package manifests, SHA-256 payload hashes, layout, architecture, and launch metadata before atomic replacement. Configure CI to upload development ZIPs after checks pass. Local archive and 14 packaging tests pass; remote artifact production still needs a workflow run.
 - [x] Add a Space Map page (WizTree-style folder sizes, treemap, inspector) and a saved Workbench / Amber Deck theme choice, from the [Space Map design](https://claude.ai/artifact/TxcKwHdjUeTQtyE3YqUPv2). Folder totals and treemap layout have tests; visual review of both themes remains pending.
-- [ ] Build the Amber Deck layout: top scan bar, tabbed left/right panels, and footer graphs (size by modified year, folder size strip, mini treemap). Today Amber Deck changes colours only.
+- [x] Build the Amber Deck layout: top scan bar, tabbed left/right panels, and footer graphs (size by modified year, folder size strip, mini treemap, caption). Visual review remains pending.
 - [ ] Sign, notarize where applicable, and define the release and update process. Publish release builds, support docs, architecture diagram, reproducible benchmark results, screenshots, and a short demo.
 - [ ] Evaluate deeper archive previews and workspace customization against user evidence. Keep analysis local and require opt-in for any future telemetry.
 

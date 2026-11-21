@@ -20,43 +20,7 @@ use super::{
 
 pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoElement {
     let scan = &workspace.scan;
-    let (heading, description) = match (&scan.active, &scan.report) {
-        (Some(active), _) => (
-            if active.cancelling {
-                "Cancelling scan"
-            } else if active.analyzing {
-                "Checking duplicates and similar images"
-            } else {
-                "Scanning folder"
-            },
-            format!(
-                "{} · {} files · {} folders · {} logical size · {} skipped · {} errors",
-                active.root.display(),
-                active.progress.files,
-                active.progress.directories,
-                format_bytes(active.progress.logical_bytes),
-                active.progress.skipped,
-                active.progress.errors,
-            ),
-        ),
-        (None, Some(report)) => (
-            if report.summary.cancelled {
-                "Last scan cancelled"
-            } else {
-                "Last scan"
-            },
-            format!(
-                "{} · {} files · {} logical size",
-                report.root.display(),
-                report.summary.progress.files,
-                format_bytes(report.summary.progress.logical_bytes),
-            ),
-        ),
-        (None, None) => (
-            "Ready to scan",
-            "Choose a folder to inspect its files. Scans are read-only.".into(),
-        ),
-    };
+    let (heading, description) = scan_status(workspace);
     let scan_button = match &scan.active {
         Some(active) => Button::new("cancel-scan")
             .label("Cancel scan")
@@ -254,4 +218,46 @@ fn exclusions_card(workspace: &Workspace, cx: &Context<Workspace>) -> impl IntoE
                 ),
         )
         .children(rows)
+}
+
+/// The current or last scan as a heading and a one-line description.
+pub(super) fn scan_status(workspace: &Workspace) -> (&'static str, String) {
+    let scan = &workspace.scan;
+    match (&scan.active, &scan.report) {
+        (Some(active), _) => (
+            if active.cancelling {
+                "Cancelling scan"
+            } else if active.analyzing {
+                "Checking duplicates and similar images"
+            } else {
+                "Scanning folder"
+            },
+            format!(
+                "{} · {} files · {} folders · {} logical size · {} skipped · {} errors",
+                active.root.display(),
+                active.progress.files,
+                active.progress.directories,
+                format_bytes(active.progress.logical_bytes),
+                active.progress.skipped,
+                active.progress.errors,
+            ),
+        ),
+        (None, Some(report)) => (
+            if report.summary.cancelled {
+                "Last scan cancelled"
+            } else {
+                "Last scan"
+            },
+            format!(
+                "{} · {} files · {} logical size",
+                report.root.display(),
+                report.summary.progress.files,
+                format_bytes(report.summary.progress.logical_bytes),
+            ),
+        ),
+        (None, None) => (
+            "Ready to scan",
+            "Choose a folder to inspect its files. Scans are read-only.".into(),
+        ),
+    }
 }

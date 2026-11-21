@@ -388,6 +388,28 @@ fn totals_each_folder_level_for_the_space_map() -> Result<(), Box<dyn std::error
 }
 
 #[test]
+fn totals_bytes_by_modified_year() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut store = ScanStore::open(&directory.path().join("scans.sqlite3"))?;
+    let mut writer = store.begin_scan(directory.path(), 1)?;
+    let at = |seconds| Some(UNIX_EPOCH + Duration::from_secs(seconds));
+    for (path, bytes, modified) in [
+        ("old.txt", 4, at(1_622_505_600)),   // 2021-06-01
+        ("new.txt", 7, at(1_672_531_200)),   // 2023-01-01
+        ("newer.txt", 3, at(1_700_000_000)), // 2023-11-14
+        ("unknown.txt", 100, None),
+    ] {
+        writer.insert_file(&FileRecord {
+            modified,
+            ..file(path, bytes)
+        })?;
+    }
+    let scan = writer.finish(&summary(4, false), 0)?;
+    assert_eq!(store.modified_years(scan.id)?, [(2021, 4), (2023, 10)]);
+    Ok(())
+}
+
+#[test]
 fn totals_file_types_for_a_reopened_partial_scan() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let db = directory.path().join("scans.sqlite3");

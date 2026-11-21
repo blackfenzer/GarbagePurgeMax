@@ -1,4 +1,5 @@
 mod cleanup;
+mod deck;
 mod exclusions;
 mod history;
 mod overview;
@@ -15,7 +16,10 @@ use gpui_kit::component::{
     button::Button,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
 };
-use gpui_kit::{Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div, px};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    AnyElement, Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div, px,
+};
 use theme::AppTheme;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -41,10 +45,20 @@ pub(crate) struct Workspace {
     cleanup: cleanup::Cleanup,
     space_map: space_map::SpaceMap,
     theme: AppTheme,
+    /// The page in Amber Deck's left panel; `page` drives its right panel.
+    deck_left: Page,
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.theme == AppTheme::AmberDeck {
+            // Amber Deck always shows Space Map, so follow the scan open in Scan Results.
+            if self.space_map.scan_id() != self.results.saved_scan().map(|scan| scan.id) {
+                let scan = self.results.saved_scan().cloned();
+                self.space_map.open(scan, cx);
+            }
+            return deck::render(self, cx).into_any_element();
+        }
         let menu = SidebarMenu::new()
             .child(self.navigation_item(Page::Overview, "Overview", IconName::LayoutDashboard, cx))
             .child(self.navigation_item(Page::SpaceMap, "Space Map", IconName::ChartPie, cx))
@@ -74,40 +88,12 @@ impl Render for Workspace {
                     .footer(self.theme_switch(cx)),
             )
             .child(
-                div().flex_1().min_w(px(0.0)).child(match self.page {
-                    Page::Overview => overview::render(self, cx).into_any_element(),
-                    Page::SpaceMap => self.space_map.render(cx).into_any_element(),
-                    Page::Results => self
-                        .results
-                        .render(self.scan.report.as_ref(), cx)
-                        .into_any_element(),
-                    Page::History => self
-                        .history
-                        .render(self.can_start_scan(), cx)
-                        .into_any_element(),
-                    Page::Review => self.review.render(cx).into_any_element(),
-                    Page::Cleanup => self
-                        .cleanup
-                        .render(
-                            false,
-                            self.scan.active.is_some()
-                                || self.scan.choosing_folder
-                                || self.exclusion_settings_busy(),
-                            cx,
-                        )
-                        .into_any_element(),
-                    Page::Recovery => self
-                        .cleanup
-                        .render(
-                            true,
-                            self.scan.active.is_some()
-                                || self.scan.choosing_folder
-                                || self.exclusion_settings_busy(),
-                            cx,
-                        )
-                        .into_any_element(),
-                }),
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(self.page_view(self.page, cx)),
             )
+            .into_any_element()
     }
 }
 
@@ -120,6 +106,7 @@ impl Workspace {
         Self {
             space_map: space_map::SpaceMap::default(),
             theme,
+            deck_left: Page::SpaceMap,
             page: Page::default(),
             exclusions: exclusions::Exclusions::load(cx),
             results: results::Results::new(window, cx),
@@ -131,18 +118,65 @@ impl Workspace {
         }
     }
 
-    fn theme_switch(&self, cx: &Context<Self>) -> SidebarFooter {
-        let mut choices = div().flex().flex_col().gap_1().w_full().child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("Theme"),
-        );
+    /// One page's content. Both layouts show pages through this.
+    fn page_view(&self, page: Page, cx: &Context<Self>) -> AnyElement {
+        let cleanup_blocked = self.scan.active.is_some()
+            || self.scan.choosing_folder
+            || self.exclusion_settings_busy();
+        match page {
+            Page::Overview => overview::render(self, cx).into_any_element(),
+            Page::SpaceMap => self.space_map.render(cx).into_any_element(),
+            Page::Results => self
+                .results
+                .render(self.scan.report.as_ref(), cx)
+                .into_any_element(),
+            Page::History => self
+                .history
+                .render(self.can_start_scan(), cx)
+                .into_any_element(),
+            Page::Review => self.review.render(cx).into_any_element(),
+            Page::Cleanup => self
+                .cleanup
+                .render(false, cleanup_blocked, cx)
+                .into_any_element(),
+            Page::Recovery => self
+                .cleanup
+                .render(true, cleanup_blocked, cx)
+                .into_any_element(),
+        }
+    }
+
+    /// Loads what `page` shows when it is opened.
+    fn load_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        match page {
+            Page::History => self.history.load(0, cx),
+            Page::Review => {
+                let scan = self.results.saved_scan().cloned();
+                self.review.open(scan, cx);
+            }
+            Page::Overview => self.overview.load(cx),
+            Page::SpaceMap => {
+                let scan = self.results.saved_scan().cloned();
+                self.space_map.open(scan, cx);
+            }
+            Page::Results => {}
+            Page::Cleanup | Page::Recovery => self.cleanup.load(0, cx),
+        }
+        cx.notify();
+    }
+
+    /// The theme choices, stacked in the sidebar or in a row in Amber Deck's top bar.
+    fn theme_buttons(&self, stacked: bool, cx: &Context<Self>) -> gpui_kit::Div {
+        let mut choices = if stacked {
+            div().flex().flex_col().gap_1().w_full()
+        } else {
+            div().flex().gap_1()
+        };
         for theme in AppTheme::ALL {
             choices = choices.child(
                 Button::new(theme.label())
                     .small()
-                    .w_full()
+                    .when(stacked, |button| button.w_full())
                     .label(theme.label())
                     .selected(self.theme == theme)
                     .on_click(cx.listener(move |workspace, _, _, cx| {
@@ -152,7 +186,24 @@ impl Workspace {
                     })),
             );
         }
-        SidebarFooter::new().child(choices)
+        choices
+    }
+
+    fn theme_switch(&self, cx: &Context<Self>) -> SidebarFooter {
+        SidebarFooter::new().child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w_full()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Theme"),
+                )
+                .child(self.theme_buttons(true, cx)),
+        )
     }
 
     fn navigation_item(
@@ -167,21 +218,7 @@ impl Workspace {
             .active(self.page == page)
             .on_click(cx.listener(move |workspace, _, _, cx| {
                 workspace.page = page;
-                match page {
-                    Page::History => workspace.history.load(0, cx),
-                    Page::Review => {
-                        let scan = workspace.results.saved_scan().cloned();
-                        workspace.review.open(scan, cx);
-                    }
-                    Page::Overview => workspace.overview.load(cx),
-                    Page::SpaceMap => {
-                        let scan = workspace.results.saved_scan().cloned();
-                        workspace.space_map.open(scan, cx);
-                    }
-                    Page::Results => {}
-                    Page::Cleanup | Page::Recovery => workspace.cleanup.load(0, cx),
-                }
-                cx.notify();
+                workspace.load_page(page, cx);
             }))
     }
 }
