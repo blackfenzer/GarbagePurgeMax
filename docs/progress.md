@@ -2,7 +2,9 @@
 
 ## 2026-11-22 · 0.4.0 development release
 
-Bumped the workspace to 0.4.0 and tagged `v0.4.0`. On macOS 27.2 (Apple Silicon, Rust 1.100.0): fmt, Clippy (with and without `ui-smoke`), **115 Rust tests**, the SQLite schema tests, the packaging tests, the UI smoke run and the Windows lint all passed. `target/packages/Storage-Clinic-0.4.0-macos-arm64.zip` was built with `.github/scripts/package.py` and passed `verify_package.py` for 0.4.0 / macos-arm64. It is unsigned and not notarized. No GitHub Release page was created (the `gh` CLI is not signed in here); CI uploads each push's package as an Actions artifact. Still open: native macOS Trash acceptance, including a non-empty folder; the Windows build, runtime and package; and opening the theme menu by hand.
+Bumped the workspace to 0.4.0 and tagged `v0.4.0`. On macOS 27.2 (Apple Silicon, Rust 1.100.0): fmt, Clippy (with and without `ui-smoke`), **115 Rust tests**, the SQLite schema tests, the packaging tests, the UI smoke run and the Windows lint all passed. `target/packages/Storage-Clinic-0.4.0-macos-arm64.zip` was built with `.github/scripts/package.py` and passed `verify_package.py` for 0.4.0 / macos-arm64. It is unsigned and not notarized. It is published as the GitHub pre-release `v0.4.0` with that zip attached.
+
+After the release, Windows CI (red since `a6b0880`) was fixed in three test-only commits: the path-traversal test builds `..` as text because `Path::join` resolves it inside verbatim `\\?\` paths; the Space Map store test writes fixture paths with native separators; and timestamp tests step by 100 ns, the Windows clock resolution. Windows x64 and macOS CI both pass on `16ed464`; the `v0.4.0` tag stays on the release commit. Still open: native macOS Trash acceptance, including a non-empty folder; the Windows runtime and package; and opening the theme menu by hand.
 
 ## 2026-11-22 · Treemap shadows and gradients
 
