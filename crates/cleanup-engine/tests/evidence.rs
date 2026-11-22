@@ -138,3 +138,25 @@ fn sparse_file_allocation_uses_blocks_instead_of_logical_length() -> io::Result<
     );
     Ok(())
 }
+
+#[test]
+fn folder_contents_are_listed_and_any_change_inside_is_rejected() -> io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let folder = temp.path().canonicalize()?.join("project");
+    fs::create_dir_all(folder.join("build/cache"))?;
+    fs::write(folder.join("notes.txt"), b"abc")?;
+    fs::write(folder.join("build/cache/big.bin"), vec![0; 4096])?;
+    let cancel = AtomicBool::new(false);
+    let (proof, contents) = cleanup_engine::inspect_contents(&folder, &cancel)?;
+    let contents = contents.expect("a non-empty folder lists its contents");
+    assert_eq!((contents.files, contents.folders), (2, 2));
+    assert_eq!(proof.logical_bytes, 4099);
+    assert_eq!(
+        contents.largest[0].0,
+        std::path::Path::new("build/cache/big.bin")
+    );
+    revalidate(&folder, &proof, None, &cancel)?;
+    fs::write(folder.join("build/cache/added.txt"), b"new")?;
+    assert!(revalidate(&folder, &proof, None, &cancel).is_err());
+    Ok(())
+}

@@ -28,6 +28,9 @@ impl Fixture {
         fs::write(tree.join("first.tmp"), b"temporary one")?;
         fs::write(tree.join("second.tmp"), b"temporary two, different size")?;
         fs::create_dir(tree.join("empty"))?;
+        fs::create_dir_all(tree.join("project/src"))?;
+        fs::write(tree.join("project/src/main.rs"), b"fn main() {}")?;
+        fs::write(tree.join("project/README"), b"synthetic project")?;
         let database = root.join("app-data/scans.sqlite3");
         let scan = inspect_and_save(
             tree.clone(),
@@ -498,5 +501,39 @@ fn unreadable_exclusion_settings_fail_closed_before_filesystem_actions() -> io::
     assert_eq!(outcome.failed, 1);
     assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
     assert!(fixture.tree.join("first.tmp").exists());
+    Ok(())
+}
+
+#[test]
+fn chosen_folder_moves_only_with_its_previewed_contents_and_restores() -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let backend = fixture.backend()?;
+    let cancel = AtomicBool::new(false);
+    let project = fixture.tree.join("project");
+    // Something already queued stays queued while a chosen folder moves on its own.
+    let queued = fixture.queue("first.tmp", None)?;
+    let (entry, contents) =
+        job::prepare_chosen(&fixture.store()?, &fixture.scan, &project, &cancel)?;
+    assert_eq!(contents.map(|contents| contents.files), Some(2));
+    fs::write(project.join("src/new.rs"), b"added after the preview")?;
+    let refused = job::execute_chosen(&mut fixture.store()?, &entry, &backend, &cancel)?;
+    assert_eq!((refused.moved, refused.failed), (0, 1));
+    assert_eq!(backend.calls.load(Ordering::Relaxed), 0);
+    assert!(project.join("src/new.rs").exists());
+
+    let (entry, _) = job::prepare_chosen(&fixture.store()?, &fixture.scan, &project, &cancel)?;
+    let moved = job::execute_chosen(&mut fixture.store()?, &entry, &backend, &cancel)?;
+    assert_eq!(moved.moved, 1);
+    assert!(!project.exists());
+    let queue = fixture.store()?.cleanup_items(true, 30, 0)?;
+    assert_eq!(
+        queue.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [queued]
+    );
+    let trashed = fixture.store()?.cleanup_items(false, 30, 0)?[0].clone();
+    assert_eq!(trashed.state, CleanupState::Trashed);
+    job::restore(&mut fixture.store()?, trashed.id, &backend, &cancel)?;
+    assert_eq!(fs::read(project.join("src/main.rs"))?, b"fn main() {}");
+    assert!(job::prepare_chosen(&fixture.store()?, &fixture.scan, &fixture.tree, &cancel).is_err());
     Ok(())
 }

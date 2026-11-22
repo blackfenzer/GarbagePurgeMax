@@ -49,13 +49,25 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
                             div().size_full().p_3().child(
                                 h_resizable("deck-panels")
                                     .child(
+                                        // Padding beside the divider keeps a visible gap
+                                        // between the two panels.
                                         resizable_panel().size_range(px(320.0)..px(4000.0)).child(
-                                            panel(workspace, Side::Left, workspace.deck_left, cx),
+                                            div().size_full().pr(px(6.0)).child(panel(
+                                                workspace,
+                                                Side::Left,
+                                                workspace.deck_left,
+                                                cx,
+                                            )),
                                         ),
                                     )
                                     .child(
                                         resizable_panel().size_range(px(360.0)..px(4000.0)).child(
-                                            panel(workspace, Side::Right, workspace.deck_right, cx),
+                                            div().size_full().pl(px(6.0)).child(panel(
+                                                workspace,
+                                                Side::Right,
+                                                workspace.deck_right,
+                                                cx,
+                                            )),
                                         ),
                                     ),
                             ),

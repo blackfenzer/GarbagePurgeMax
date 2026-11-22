@@ -515,8 +515,9 @@ impl SpaceMap {
             .border_color(theme.border)
             .child(div().flex_1().child("Name"))
             .child(div().w(px(90.0)).text_right().child("Size"))
-            .child(div().w(px(170.0)).child("% of folder"))
-            .child(div().w(px(80.0)).text_right().child("Files"));
+            .child(div().w(px(120.0)).child("% of folder"))
+            .child(div().w(px(64.0)).text_right().child("Files"))
+            .child(div().w(px(24.0)));
         let mut rows = div()
             .id("space-map-rows")
             .flex()
@@ -526,6 +527,7 @@ impl SpaceMap {
         for (index, entry) in summary.entries.iter().take(MAX_ROWS).enumerate() {
             let share = fraction(entry.logical_bytes, summary.logical_bytes);
             let selected = self.selected == Some(index);
+            let name = entry.name.clone();
             rows = rows.child(
                 div()
                     .id(("space-map-row", index))
@@ -554,8 +556,11 @@ impl SpaceMap {
                                     .size(px(16.0))
                                     .flex_none(),
                             )
+                            // Without a zero minimum width a long name pushes into the Size column.
                             .child(
                                 div()
+                                    .min_w(px(0.0))
+                                    .overflow_hidden()
                                     .text_ellipsis()
                                     .when(entry.is_folder, |name| name.font_semibold())
                                     .child(entry_label(entry)),
@@ -569,7 +574,7 @@ impl SpaceMap {
                     )
                     .child(
                         div()
-                            .w(px(170.0))
+                            .w(px(120.0))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -591,10 +596,24 @@ impl SpaceMap {
                     )
                     .child(
                         div()
-                            .w(px(80.0))
+                            .w(px(64.0))
                             .text_right()
                             .text_color(theme.muted_foreground)
                             .child(entry.files.to_string()),
+                    )
+                    .child(
+                        Button::new(("space-map-trash", index))
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::Trash))
+                            .tooltip("Move to Trash")
+                            .on_click(cx.listener(move |workspace, _, _, cx| {
+                                cx.stop_propagation();
+                                if let Some(scan) = workspace.space_map.scan.clone() {
+                                    let path = workspace.space_map.folder.join(&name);
+                                    workspace.ask_trash(scan, path, cx);
+                                }
+                            })),
                     ),
             );
         }
@@ -614,7 +633,7 @@ impl SpaceMap {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(460.0))
+            .min_w(px(340.0))
             .min_h(px(0.0))
             .text_sm()
             .border_1()
@@ -752,6 +771,22 @@ impl SpaceMap {
                         ),
                     )),
             );
+        // The scan root itself can't be moved; anything inside it can.
+        if path != scan.root {
+            let scan = scan.clone();
+            panel = panel.child(
+                div().flex().child(
+                    Button::new("space-map-inspector-trash")
+                        .small()
+                        .outline()
+                        .icon(Icon::new(IconName::Trash))
+                        .label("Move to Trash")
+                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                            workspace.ask_trash(scan.clone(), path.clone(), cx);
+                        })),
+                ),
+            );
+        }
         if selected.is_none() {
             let largest = summary.types.first().map_or(1, |total| total.logical_bytes);
             for total in summary.types.iter().take(5) {

@@ -15,7 +15,7 @@ use scan_store::{CleanupItem, CleanupState, SavedScan};
 
 use super::{Page, Workspace, scan::format_bytes, storage};
 
-mod job;
+pub(super) mod job;
 #[cfg(test)]
 mod tests;
 
@@ -215,9 +215,9 @@ impl Workspace {
         {
             return;
         }
-        self.show_page(Page::Cleanup);
         self.cleanup.busy = true;
         self.cleanup.confirm = false;
+        self.review.queue_note = Some("Checking the item before queueing…".into());
         let cancel = Arc::new(AtomicBool::new(false));
         self.cleanup.cancel = Some(cancel.clone());
         self.cleanup.request = Some(cx.spawn(async move |workspace, cx| {
@@ -232,7 +232,13 @@ impl Workspace {
                     )
                 })
                 .await;
-            let _ = workspace.update(cx, |workspace, cx| workspace.finish_cleanup(result, cx));
+            let _ = workspace.update(cx, |workspace, cx| {
+                workspace.review.queue_note = Some(match &result {
+                    Ok(message) => message.clone(),
+                    Err(error) => format!("Not queued: {error}"),
+                });
+                workspace.finish_cleanup(result, cx);
+            });
         }));
         cx.notify();
     }

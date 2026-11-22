@@ -34,7 +34,8 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
         );
     }
     let fixture = tempfile::tempdir()?;
-    let root = fixture.path().join("you");
+    // Cleanup refuses linked ancestors, and macOS temp folders sit under the /var link.
+    let root = fixture.path().canonicalize()?.join("you");
     write_fixture(&root)?;
     fs::create_dir_all(shots)?;
 
@@ -173,6 +174,54 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
     )?;
     ensure(years > 0, "the footer's year chart has data")?;
     capture(&mut cx, window.into(), &shots.join("amber-deck-movies.png"))?;
+
+    // Move to Trash previews a folder's contents first; the smoke run never confirms.
+    window.update(&mut cx, |workspace, _, cx| {
+        let scan = workspace.results.saved_scan().cloned();
+        if let Some(scan) = scan {
+            workspace.ask_trash(scan, root.join("Movies"), cx);
+        }
+    })?;
+    settle(&mut cx);
+    let preview = window.update(&mut cx, |workspace, _, _| workspace.trash_preview())?;
+    ensure(
+        preview == Ok(Some(2)),
+        &format!("the Trash preview lists Movies' two files: {preview:?}"),
+    )?;
+    capture(
+        &mut cx,
+        window.into(),
+        &shots.join("amber-deck-trash-preview.png"),
+    )?;
+    window.update(&mut cx, |workspace, _, cx| {
+        workspace.trash = None;
+        cx.notify();
+    })?;
+
+    // Review's other tabs, in both themes.
+    for theme in AppTheme::ALL {
+        for (kind, name) in [
+            (
+                super::review::ReviewKind::CleanupCandidates,
+                "review-candidates",
+            ),
+            (
+                super::review::ReviewKind::EmptyFolders,
+                "review-empty-folders",
+            ),
+        ] {
+            window.update(&mut cx, |workspace, _, cx| {
+                workspace.theme = theme;
+                theme.apply(cx);
+                workspace.show_page(Page::Review);
+                workspace.load_page(Page::Review, cx);
+                workspace.review.show(kind, cx);
+            })?;
+            settle(&mut cx);
+            let file = shots.join(format!("{}-{name}.png", slug(theme.label())));
+            capture(&mut cx, window.into(), &file)?;
+        }
+    }
     Ok(())
 }
 
@@ -226,6 +275,7 @@ fn write_fixture(root: &Path) -> std::io::Result<()> {
     file("Downloads/movie.mp4.crdownload", vec![4; 120_000])?;
     file("Documents/notes.txt", b"synthetic notes".to_vec())?;
     file("Documents/empty.txt", Vec::new())?;
+    fs::create_dir_all(root.join("Documents/Old drafts"))?;
     file(".DS_Store", vec![0; 6])?;
     file("Code/app/package.json", b"{}".to_vec())?;
     file("Code/app/node_modules/left-pad/index.js", vec![1; 300_000])?;

@@ -6,22 +6,28 @@ use std::sync::{
 };
 use std::time::SystemTime;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, button::Button,
+    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, button::Button,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AppContext as _, Context, Div, Image, ImageFormat, InteractiveElement as _, IntoElement,
     ObjectFit, ParentElement as _, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
     Task, div, img, px,
 };
 use scan_engine::{
-    CleanupCandidate, CleanupKind, DirectoryRecord, FileRecord, SIMILAR_IMAGE_DISTANCE,
-    assess_risk, image_preview, is_hashable_image,
+    CleanupCandidate, CleanupKind, DirectoryRecord, FileRecord, RiskAssessment, RiskTier,
+    SIMILAR_IMAGE_DISTANCE, assess_risk, image_preview, is_hashable_image,
 };
 use scan_store::{DuplicateEvidence, ReviewGroup, SavedScan, SimilarImageEvidence};
 
-use super::{Workspace, scan::format_bytes, storage};
+use super::{
+    Page, Workspace,
+    scan::{count, format_bytes},
+    storage,
+};
 
 mod status;
 
@@ -90,6 +96,8 @@ pub(super) struct Review {
     request: Option<Task<()>>,
     preview_request: Option<PreviewRequest>,
     keeper: Option<PathBuf>,
+    /// The last Queue result, shown here so several items can be queued without leaving.
+    pub(super) queue_note: Option<String>,
 }
 
 impl Review {
@@ -101,7 +109,7 @@ impl Review {
         }
     }
 
-    fn show(&mut self, kind: ReviewKind, cx: &mut Context<Workspace>) {
+    pub(super) fn show(&mut self, kind: ReviewKind, cx: &mut Context<Workspace>) {
         if self.kind != kind {
             self.kind = kind;
             self.load_groups(0, cx);
@@ -236,16 +244,16 @@ impl Review {
 
         let explanation = match self.kind {
             ReviewKind::ExactDuplicates => {
-                "Files in each group had byte-identical contents when scanned, verified with SHA-256 and a full comparison. Previews are loaded from the current files.".to_string()
+                "Files in each group had byte-identical contents when scanned, verified with SHA-256 and a full comparison. Pick the copy to keep, then queue the others.".to_string()
             },
             ReviewKind::SimilarImages => {
                 format!(
                     "Images whose difference hash is within {SIMILAR_IMAGE_DISTANCE} of 64 bits of the group's reference image. This is a heuristic match, not a verified copy. Compare the images before acting.",
                 )
             },
-            ReviewKind::EmptyFolders => "Folders observed with no entries, including hidden entries. Queue eligible folders for a separate confirmation; emptiness is checked again before moving.".to_string(),
+            ReviewKind::EmptyFolders => "Folders observed with no entries, including hidden entries. Emptiness is checked again before anything moves.".to_string(),
             ReviewKind::CleanupCandidates => {
-                "Metadata candidates need your review. Add eligible items to Cleanup Queue; nothing moves until you confirm the queue. Protected items remain blocked.".to_string()
+                "Metadata candidates need your review. Queue the ones you want gone; nothing moves until you confirm the queue. Protected items stay blocked.".to_string()
             },
         };
         let status = if self.loading {
@@ -265,12 +273,31 @@ impl Review {
                 .selected(self.kind == kind)
                 .on_click(cx.listener(move |workspace, _, _, cx| workspace.review.show(kind, cx)))
         };
+        let body = if self.kind == ReviewKind::EmptyFolders {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .gap_2()
+                .child(self.empty_folders(cx))
+                .children(self.pagination(cx))
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.))
+                .gap_3()
+                .child(self.group_list(cx))
+                .child(self.group_detail(cx))
+        };
 
         page.child(
             div()
                 .text_sm()
                 .text_color(muted)
-                .text_ellipsis()
+                .line_clamp(2)
                 .child(scan.root.display().to_string()),
         )
         .child(
@@ -304,87 +331,120 @@ impl Review {
             status::notice(self.kind, scan)
                 .map(|text| div().text_sm().text_color(muted).child(text)),
         )
-        .children(status.map(|status| div().text_sm().text_color(muted).child(status)))
-        .child(
+        .children(self.queue_note.as_ref().map(|note| {
             div()
                 .flex()
-                .flex_1()
-                .min_h(px(0.))
-                .gap_4()
-                .child(self.group_list(cx))
-                .child(self.group_detail(cx)),
+                .flex_wrap()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .rounded(px(4.))
+                .bg(cx.theme().muted)
+                .text_sm()
+                .child(Icon::new(IconName::Inbox).text_color(cx.theme().primary))
+                .child(div().flex_1().min_w(px(200.)).child(note.clone()))
+                .child(
+                    Button::new("review-open-queue")
+                        .small()
+                        .outline()
+                        .label("Open Cleanup Queue")
+                        .on_click(cx.listener(|workspace, _, _, cx| {
+                            workspace.show_page(Page::Cleanup);
+                            workspace.load_page(Page::Cleanup, cx);
+                        })),
+                )
+        }))
+        .children(status.map(|status| div().text_sm().text_color(muted).child(status)))
+        .child(body)
+    }
+
+    fn pagination(&self, cx: &Context<Workspace>) -> Option<Div> {
+        if self.offset == 0 && !self.has_next {
+            return None;
+        }
+        let previous = self.offset.saturating_sub(u64::from(PAGE_SIZE));
+        let next = self.offset + u64::from(PAGE_SIZE);
+        Some(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    Button::new("previous-groups")
+                        .small()
+                        .label("Previous")
+                        .disabled(self.loading || self.offset == 0)
+                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                            workspace.review.load_groups(previous, cx)
+                        })),
+                )
+                .child(
+                    Button::new("next-groups")
+                        .small()
+                        .label("Next")
+                        .disabled(self.loading || !self.has_next)
+                        .on_click(cx.listener(move |workspace, _, _, cx| {
+                            workspace.review.load_groups(next, cx)
+                        })),
+                ),
         )
     }
 
+    /// Groups as a wrapping row of compact tiles above the table, so the table keeps the full
+    /// width; the selected one carries the accent bar.
     fn group_list(&self, cx: &Context<Workspace>) -> Div {
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
         let rows = self.groups.iter().map(|group| {
             let group_id = group.group_id;
-            let row = div()
+            let selected = self.selected_group == Some(group_id);
+            div()
+                .id(("review-group", group_id))
                 .flex()
                 .flex_col()
-                .p_2()
-                .rounded_md()
+                .min_w(px(150.))
+                .gap_1()
+                .px_3()
+                .py_2()
+                .border_l_2()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .map(|row| {
+                    if selected {
+                        row.border_color(theme.primary).bg(theme.list_active)
+                    } else {
+                        row.border_color(gpui_kit::transparent_black())
+                            .hover(|row| row.bg(theme.list_hover))
+                    }
+                })
+                .on_click(cx.listener(move |workspace, _, _, cx| {
+                    workspace.review.select_group(group_id, cx)
+                }))
                 .child(
-                    Button::new(("review-group", group_id))
-                        .small()
-                        .label(self.group_title(group_id))
-                        .selected(self.selected_group == Some(group_id))
-                        .on_click(cx.listener(move |workspace, _, _, cx| {
-                            workspace.review.select_group(group_id, cx)
-                        })),
+                    div()
+                        .text_sm()
+                        .when(selected, |title| {
+                            title.font_semibold().text_color(theme.primary)
+                        })
+                        .child(self.group_title(group_id)),
                 )
-                .child(div().text_xs().text_color(muted).child(format!(
-                    "{} items · {}",
-                    group.file_count,
-                    format_bytes(group.logical_bytes)
-                )));
-            if self.selected_group == Some(group_id) {
-                row.bg(cx.theme().accent)
-            } else {
-                row
-            }
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "{} · {}",
+                            count(group.file_count, "file"),
+                            format_bytes(group.logical_bytes)
+                        )),
+                )
         });
-        let previous = self.offset.saturating_sub(u64::from(PAGE_SIZE));
-        let next = self.offset + u64::from(PAGE_SIZE);
-
         div()
             .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .w(px(200.))
+            .flex_wrap()
+            .items_center()
             .gap_2()
-            .child(
-                div()
-                    .id("review-groups")
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .children(rows),
-            )
-            .children((self.offset > 0 || self.has_next).then(|| {
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("previous-groups")
-                            .small()
-                            .label("Previous")
-                            .disabled(self.loading || self.offset == 0)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.review.load_groups(previous, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("next-groups")
-                            .small()
-                            .label("Next")
-                            .disabled(self.loading || !self.has_next)
-                            .on_click(cx.listener(move |workspace, _, _, cx| {
-                                workspace.review.load_groups(next, cx)
-                            })),
-                    )
-            }))
+            .children(rows)
+            .children(self.pagination(cx))
     }
 
     fn group_title(&self, group_id: u64) -> String {
@@ -398,52 +458,90 @@ impl Review {
         }
     }
 
-    /// Group members side by side: preview, location, size, and the evidence for the match.
+    /// Empty folders as one full-width list: full path, risk and a small Queue button.
+    fn empty_folders(&self, cx: &Context<Workspace>) -> impl IntoElement {
+        let theme = cx.theme();
+        let rows = self
+            .empty_folders
+            .iter()
+            .enumerate()
+            .map(|(index, folder)| {
+                let risk = assess_risk(&folder.path, false);
+                let path = folder.path.clone();
+                let scan = self.scan.clone();
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .hover(|row| row.bg(theme.list_hover))
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap_2()
+                            .flex_1()
+                            .min_w(px(NAME_MIN_WIDTH))
+                            .overflow_hidden()
+                            .child(
+                                img(crate::file_icons::icon_path(
+                                    folder.path.file_name().unwrap_or(folder.path.as_os_str()),
+                                    true,
+                                ))
+                                .size(px(16.))
+                                .flex_none(),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .text_sm()
+                                    .child(folder.path.display().to_string()),
+                            ),
+                    )
+                    .child(risk_cell(risk, cx))
+                    .child(
+                        div().w(px(ACTION_WIDTH)).child(
+                            Button::new(("queue-folder", index))
+                                .small()
+                                .icon(Icon::new(IconName::Inbox))
+                                .label("Queue")
+                                .disabled(risk.tier == RiskTier::Protected || self.loading)
+                                .on_click(cx.listener(move |workspace, _, _, cx| {
+                                    if let Some(scan) = &scan {
+                                        workspace.queue_cleanup(
+                                            scan.clone(),
+                                            path.clone(),
+                                            None,
+                                            cx,
+                                        );
+                                    }
+                                })),
+                        ),
+                    )
+            });
+        div()
+            .id("empty-folder-detail")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .border_1()
+            .border_color(theme.border)
+            .rounded(px(4.))
+            .child(column_header(&["Folder", "Risk", ""], false, cx))
+            .children(rows)
+    }
+
+    /// The selected group as aligned rows, so sizes, dates, risk and full paths line up for
+    /// comparison. Images show a thumbnail.
     fn group_detail(&self, cx: &Context<Workspace>) -> impl IntoElement {
-        let muted = cx.theme().muted_foreground;
-        if self.kind == ReviewKind::EmptyFolders {
-            return div()
-                .id("empty-folder-detail")
-                .flex_1()
-                .min_w(px(0.))
-                .overflow_y_scroll()
-                .children(
-                    self.empty_folders
-                        .iter()
-                        .enumerate()
-                        .map(|(index, folder)| {
-                            let risk = assess_risk(&folder.path, false);
-                            let path = folder.path.clone();
-                            let scan = self.scan.clone();
-                            div()
-                                .p_3()
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .child(div().text_sm().child(folder.path.display().to_string()))
-                                .child(div().text_xs().child(risk.tier.label()))
-                                .child(div().text_xs().text_color(muted).child(risk.reason))
-                                .child(
-                                    Button::new(("queue-folder", index))
-                                        .small()
-                                        .label("Add to cleanup queue")
-                                        .disabled(
-                                            risk.tier == scan_engine::RiskTier::Protected
-                                                || self.loading,
-                                        )
-                                        .on_click(cx.listener(move |workspace, _, _, cx| {
-                                            if let Some(scan) = &scan {
-                                                workspace.queue_cleanup(
-                                                    scan.clone(),
-                                                    path.clone(),
-                                                    None,
-                                                    cx,
-                                                );
-                                            }
-                                        })),
-                                )
-                        }),
-                );
-        }
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
         let members: &[Member] = match (self.kind, self.selected_group) {
             (ReviewKind::CleanupCandidates, Some(group_id)) => self
                 .candidate_groups
@@ -451,13 +549,34 @@ impl Review {
                 .map_or(&[], Vec::as_slice),
             _ => &self.members,
         };
-        let total = self
+        let group = self
             .groups
             .iter()
-            .find(|group| Some(group.group_id) == self.selected_group)
-            .map_or(members.len() as u64, |group| group.file_count);
+            .find(|group| Some(group.group_id) == self.selected_group);
+        let total = group.map_or(members.len() as u64, |group| group.file_count);
         let hidden = total.saturating_sub(MAX_CARDS as u64);
-        let cards = members
+        let exact = self.kind == ReviewKind::ExactDuplicates;
+        let thumbnails = matches!(
+            self.kind,
+            ReviewKind::ExactDuplicates | ReviewKind::SimilarImages
+        );
+        let summary = group.map(|group| match self.kind {
+            ReviewKind::ExactDuplicates => {
+                let each = group.logical_bytes / group.file_count.max(1);
+                format!(
+                    "{} copies of {} · keeping one frees up to {}",
+                    group.file_count,
+                    format_bytes(each),
+                    format_bytes(group.logical_bytes.saturating_sub(each))
+                )
+            }
+            _ => format!(
+                "{} · {}",
+                count(group.file_count, "file"),
+                format_bytes(group.logical_bytes)
+            ),
+        });
+        let rows = members
             .iter()
             .take(MAX_CARDS)
             .enumerate()
@@ -467,126 +586,73 @@ impl Review {
                 let keep_path = file.path.clone();
                 let scan = self.scan.clone();
                 let keeper = self.keeper.clone();
-                let exact = self.kind == ReviewKind::ExactDuplicates;
+                let kept = keeper.as_ref() == Some(&file.path);
                 let actionable = exact || self.kind == ReviewKind::CleanupCandidates;
-                let evidence = &member.evidence;
                 let risk = assess_risk(&file.path, file.read_only);
-                let name = file
-                    .path
-                    .file_name()
-                    .unwrap_or(file.path.as_os_str())
-                    .to_string_lossy()
-                    .into_owned();
-                let folder = file
-                    .path
-                    .parent()
-                    .map(|parent| parent.display().to_string())
-                    .unwrap_or_default();
+                let name = file.path.file_name().unwrap_or(file.path.as_os_str());
+                let evidence = match &member.evidence {
+                    Some(Evidence::Exact(evidence)) => {
+                        format!("SHA-256 {}…", hex(&evidence.hash[..8]))
+                    }
+                    Some(Evidence::Similar(evidence)) if index == 0 => {
+                        format!("Reference image · hash {:016x}", evidence.difference_hash)
+                    }
+                    Some(Evidence::Similar(evidence)) => {
+                        format!("{} of 64 bits differ from the reference", evidence.distance)
+                    }
+                    Some(Evidence::Cleanup(candidate)) => candidate.evidence.clone(),
+                    None => "No saved evidence for this file".into(),
+                };
                 // GPUI receives a bounded thumbnail, never a live filesystem path.
-                let preview = if let Some(preview) = &member.preview {
-                    img(Arc::clone(preview))
-                        .object_fit(ObjectFit::Contain)
-                        .size_full()
-                        .into_any_element()
-                } else {
+                let thumbnail = thumbnails.then(|| {
+                    let content = match &member.preview {
+                        Some(preview) => img(Arc::clone(preview))
+                            .object_fit(ObjectFit::Contain)
+                            .size_full()
+                            .into_any_element(),
+                        None => img(crate::file_icons::icon_path(name, false))
+                            .size(px(24.))
+                            .into_any_element(),
+                    };
                     div()
-                        .text_xs()
-                        .text_color(muted)
-                        .child(
-                            member
-                                .preview_error
-                                .clone()
-                                .unwrap_or_else(|| "No preview".into()),
-                        )
-                        .into_any_element()
-                };
-                let evidence = match evidence {
-                    Some(Evidence::Exact(evidence)) => vec![
-                        "Exact duplicate".to_string(),
-                        format!("{} files with identical contents", evidence.file_count),
-                        format!("SHA-256 {}…", hex(&evidence.hash[..8])),
-                    ],
-                    Some(Evidence::Similar(evidence)) if index == 0 => vec![
-                        "Reference image".to_string(),
-                        format!("Difference hash {:016x}", evidence.difference_hash),
-                    ],
-                    Some(Evidence::Similar(evidence)) => vec![
-                        "Similar image".to_string(),
-                        format!("{} of 64 bits differ from the reference", evidence.distance),
-                        format!("Difference hash {:016x}", evidence.difference_hash),
-                    ],
-                    Some(Evidence::Cleanup(candidate)) => vec![
-                        candidate.kind.label().to_string(),
-                        candidate.evidence.clone(),
-                    ],
-                    None => vec!["No saved evidence for this file".to_string()],
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .w(px(220.))
-                    .p_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .h(px(150.))
-                            .mb_2()
-                            .rounded_md()
-                            .bg(cx.theme().secondary)
-                            .overflow_hidden()
-                            .child(preview),
-                    )
-                    .child(div().text_sm().font_semibold().text_ellipsis().child(name))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .text_ellipsis()
-                            .child(folder),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .child(format!("{} logical size", format_bytes(file.logical_bytes))),
-                    )
-                    .child(div().text_xs().font_semibold().child(risk.tier.label()))
-                    .child(div().text_xs().text_color(muted).child(risk.reason))
-                    .children(evidence.into_iter().enumerate().map(|(line, text)| {
-                        let row = div().text_xs();
-                        if line == 0 {
-                            row.font_semibold().child(text)
-                        } else {
-                            row.text_color(muted).child(text)
-                        }
-                    }))
-                    .children(exact.then(|| {
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_none()
+                        .size(px(THUMB_SIZE))
+                        .rounded(px(4.))
+                        .bg(theme.secondary)
+                        .overflow_hidden()
+                        .child(content)
+                });
+                let mut actions = div().flex().flex_wrap().gap_2().pt_1();
+                if exact {
+                    actions = actions.child(
                         Button::new(("keep-duplicate", index))
                             .small()
-                            .label(if self.keeper.as_ref() == Some(&file.path) {
-                                "Kept copy selected"
+                            .icon(Icon::new(if kept {
+                                IconName::CircleCheck
                             } else {
-                                "Keep this copy"
-                            })
+                                IconName::Check
+                            }))
+                            .label(if kept { "Kept copy" } else { "Keep this" })
+                            .selected(kept)
                             .on_click(cx.listener(move |workspace, _, _, cx| {
                                 workspace.review.keeper = Some(keep_path.clone());
                                 cx.notify();
-                            }))
-                    }))
-                    .children(actionable.then(|| {
+                            })),
+                    );
+                }
+                if actionable {
+                    actions = actions.child(
                         Button::new(("queue-review-file", index))
                             .small()
-                            .label("Add to cleanup queue")
+                            .icon(Icon::new(IconName::Inbox))
+                            .label("Queue")
                             .disabled(
                                 self.loading
-                                    || risk.tier == scan_engine::RiskTier::Protected
-                                    || (exact
-                                        && (keeper.is_none() || keeper.as_ref() == Some(&path))),
+                                    || risk.tier == RiskTier::Protected
+                                    || (exact && (keeper.is_none() || kept)),
                             )
                             .on_click(cx.listener(move |workspace, _, _, cx| {
                                 if let Some(scan) = &scan {
@@ -597,23 +663,199 @@ impl Review {
                                         cx,
                                     );
                                 }
-                            }))
-                    }))
+                            })),
+                    );
+                }
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_3()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .map(|row| {
+                        if kept {
+                            row.bg(theme.list_active)
+                        } else {
+                            row.hover(|row| row.bg(theme.list_hover))
+                        }
+                    })
+                    .children(thumbnail)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .flex_1()
+                            .min_w(px(NAME_MIN_WIDTH))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        img(crate::file_icons::icon_path(name, false))
+                                            .size(px(16.))
+                                            .flex_none(),
+                                    )
+                                    // One line; the full name is in the wrapped path below.
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_sm()
+                                            .font_semibold()
+                                            .child(name.to_string_lossy().into_owned()),
+                                    ),
+                            )
+                            // The full path wraps instead of being cut off.
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(file.path.display().to_string()),
+                            )
+                            .child(div().text_xs().text_color(muted).child(evidence))
+                            // Actions sit under the file they act on, so the columns stay narrow.
+                            .child(actions),
+                    )
+                    .child(
+                        div()
+                            .w(px(SIZE_WIDTH))
+                            .text_sm()
+                            .text_right()
+                            .child(format_bytes(file.logical_bytes)),
+                    )
+                    .child(
+                        div()
+                            .w(px(DATE_WIDTH))
+                            .text_xs()
+                            .text_color(muted)
+                            .child(date(file.modified)),
+                    )
+                    .child(risk_cell(risk, cx))
             });
 
         div()
             .id("review-detail")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w(px(0.))
-            .overflow_y_scroll()
+            .min_h(px(0.))
+            .gap_2()
+            .overflow_scroll()
+            .children(summary.map(|summary| div().text_sm().font_semibold().child(summary)))
+            .children((exact && self.keeper.is_none() && !members.is_empty()).then(|| {
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("Choose Keep this on the copy to keep; the others can then be queued.")
+            }))
             .children((hidden > 0).then(|| {
-                div().mb_3().text_sm().text_color(muted).child(format!(
-                    "Showing the first {MAX_CARDS} of {} files. Export CSV includes all indexed files.",
-                    total
+                div().text_sm().text_color(muted).child(format!(
+                    "Showing the first {MAX_CARDS} of {total} files. Export CSV includes all indexed files.",
                 ))
             }))
-            .child(div().flex().flex_wrap().gap_3().children(cards))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .min_w(px(TABLE_MIN_WIDTH))
+                    .border_1()
+                    .border_color(theme.border)
+                    .rounded(px(4.))
+                    .child(column_header(
+                        &["File", "Size", "Modified", "Risk"],
+                        thumbnails,
+                        cx,
+                    ))
+                    .children(rows),
+            )
     }
+}
+
+const THUMB_SIZE: f32 = 56.;
+const NAME_MIN_WIDTH: f32 = 150.;
+/// Below this the detail scrolls sideways rather than squeezing the columns.
+const TABLE_MIN_WIDTH: f32 = 480.;
+const SIZE_WIDTH: f32 = 72.;
+const DATE_WIDTH: f32 = 76.;
+const RISK_WIDTH: f32 = 112.;
+const ACTION_WIDTH: f32 = 100.;
+
+/// Column labels matching the row widths: the first label takes the remaining space.
+fn column_header(labels: &[&'static str], thumbnail: bool, cx: &Context<Workspace>) -> Div {
+    let theme = cx.theme();
+    let widths: &[f32] = if labels.len() == 3 {
+        &[RISK_WIDTH, ACTION_WIDTH]
+    } else {
+        &[SIZE_WIDTH, DATE_WIDTH, RISK_WIDTH]
+    };
+    let mut header = div()
+        .flex()
+        .gap_3()
+        .px_3()
+        .py_1()
+        .text_xs()
+        .text_color(theme.muted_foreground)
+        .bg(theme.muted)
+        .border_b_1()
+        .border_color(theme.border)
+        .when(thumbnail, |header| header.child(div().w(px(THUMB_SIZE))))
+        .child(div().flex_1().min_w(px(NAME_MIN_WIDTH)).child(labels[0]));
+    for (label, width) in labels[1..].iter().zip(widths) {
+        header = header.child(
+            div()
+                .w(px(*width))
+                .when(*label == "Size", |cell| cell.text_right())
+                .child(*label),
+        );
+    }
+    header
+}
+
+/// A coloured risk chip with the reason underneath.
+fn risk_cell(risk: RiskAssessment, cx: &Context<Workspace>) -> Div {
+    let theme = cx.theme();
+    let (label, color) = match risk.tier {
+        RiskTier::Protected => ("Protected", theme.danger),
+        RiskTier::High => ("High risk", theme.warning),
+        RiskTier::Unknown => ("Unknown risk", theme.muted_foreground),
+        RiskTier::Low => ("Low risk", theme.success),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap_1()
+        .w(px(RISK_WIDTH))
+        .child(
+            div()
+                .px_2()
+                .rounded(px(4.))
+                .border_1()
+                .border_color(color)
+                .text_color(color)
+                .text_xs()
+                .font_semibold()
+                .child(label),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(risk.reason),
+        )
+}
+
+fn date(time: Option<SystemTime>) -> String {
+    time.and_then(|time| jiff::Timestamp::try_from(time).ok())
+        .map(|time| time.strftime("%F").to_string())
+        .unwrap_or_else(|| "—".into())
 }
 
 fn load_groups(

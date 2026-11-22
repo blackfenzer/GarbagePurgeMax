@@ -15,7 +15,8 @@ icon_assets!(
         ListTree,
         ArchiveRestore,
         Clock,
-        CircleStop
+        CircleStop,
+        Trash
     ]
 );
 

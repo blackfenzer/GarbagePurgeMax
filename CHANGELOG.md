@@ -1,5 +1,11 @@
 # Changelog
 
+## Move to Trash and Review redesign — 2026-11-22
+
+- Move to Trash from Files, Tree rows and the Space Map inspector, in both themes. Folders show what is inside before anything moves, and the move is refused if their contents change first. Every move is journaled and restorable from Recovery History.
+- Review shows each group as aligned rows with full paths, size, modified date and a coloured risk chip; Empty folders is a single list. Queueing no longer leaves Review.
+- Amber Deck panels have a gap between them, and the Files panel no longer clips its toolbar or table.
+
 ## Amber Deck design review — 2026-11-22
 
 - Added colour file-type icons from Material Icon Theme (MIT) to Space Map and the Results file list.

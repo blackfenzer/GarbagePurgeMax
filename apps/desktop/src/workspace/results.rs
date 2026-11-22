@@ -7,14 +7,16 @@ use gpui_kit::base::StyledExt as _;
 use std::io;
 use std::time::{Duration, SystemTime};
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IndexPath, Selectable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IndexPath, Selectable as _, Sizable as _,
     button::Button,
     input::{Input, InputEvent, InputState},
     searchable_list::SearchableVec,
     select::{Select, SelectEvent, SelectState},
     table::{DataTable, TableEvent, TableState},
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _, Subscription,
     Window, div, px,
@@ -234,7 +236,13 @@ impl Results {
         });
     }
 
-    pub(super) fn render(&self, report: Option<&ScanReport>, cx: &Context<Workspace>) -> Div {
+    /// `stacked` puts the inspector under the table, for Amber Deck's narrower panel.
+    pub(super) fn render(
+        &self,
+        report: Option<&ScanReport>,
+        stacked: bool,
+        cx: &Context<Workspace>,
+    ) -> Div {
         let table = self.table.read(cx);
         let rows = table.delegate();
         let selected = table.selected_row().and_then(|row| rows.source_index(row));
@@ -300,6 +308,10 @@ impl Results {
                 ("Sample data".into(), scope, None, None, detail)
             }
         };
+        let selected_file = self.saved.as_ref().and_then(|saved| {
+            let file = selected.and_then(|index| saved.files.get(index))?;
+            Some((saved.scan.clone(), file.path.clone()))
+        });
         let save_error = report
             .filter(|_| self.saved.is_none())
             .and_then(|report| report.save_error.as_ref());
@@ -386,14 +398,21 @@ impl Results {
                     )
             });
 
+        // Stacked (Amber Deck): every part takes its natural height and the panel scrolls.
         div()
             .flex()
-            .size_full()
+            .map(|page| {
+                if stacked {
+                    page.flex_col().w_full()
+                } else {
+                    page.size_full()
+                }
+            })
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .flex_1()
+                    .when(!stacked, |column| column.flex_1())
                     .min_w(px(0.))
                     .gap_3()
                     .p_6()
@@ -433,10 +452,11 @@ impl Results {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_2()
                             .child(
-                                div().flex_1().min_w(px(0.)).child(
+                                div().flex_1().min_w(px(180.)).child(
                                     Input::new(&self.input)
                                         .small()
                                         .cleanable(true)
@@ -472,11 +492,27 @@ impl Results {
                                                 }
                                             }))
                                     }),
-                            ),
+                            )
+                            .children(self.saved.as_ref().map(|_| {
+                                Button::new("trash-file")
+                                    .small()
+                                    .icon(Icon::new(IconName::Trash))
+                                    .label("Move to Trash")
+                                    .tooltip(
+                                        "Move the selected file to Trash, after a confirmation",
+                                    )
+                                    .disabled(selected_file.is_none())
+                                    .on_click(cx.listener(move |workspace, _, _, cx| {
+                                        if let Some((scan, path)) = selected_file.clone() {
+                                            workspace.ask_trash(scan, path, cx);
+                                        }
+                                    }))
+                            })),
                     )
                     .children(self.saved.as_ref().map(|_| {
                         div()
                             .flex()
+                            .flex_wrap()
                             .gap_2()
                             .child(
                                 div().w(px(190.)).child(
@@ -506,15 +542,25 @@ impl Results {
                     .children(show_table.then(|| {
                         // Fills the page when there is room; in a narrow or scrolling panel it
                         // keeps about eight rows and the panel scrolls instead.
-                        div().flex().flex_col().flex_1().min_h(px(320.)).child(
-                            DataTable::new(&self.table)
-                                .small()
-                                .accessibility_label("Scan files"),
-                        )
+                        div()
+                            .flex()
+                            .flex_col()
+                            .map(|table| {
+                                if stacked {
+                                    table.h(px(440.))
+                                } else {
+                                    table.flex_1().min_h(px(320.))
+                                }
+                            })
+                            .child(
+                                DataTable::new(&self.table)
+                                    .small()
+                                    .accessibility_label("Scan files"),
+                            )
                     }))
                     .children(pagination),
             )
-            .child(inspector::render(detail, cx))
+            .child(inspector::render(detail, stacked, cx))
     }
 }
 

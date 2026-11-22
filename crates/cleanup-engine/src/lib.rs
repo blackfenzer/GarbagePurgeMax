@@ -2,7 +2,7 @@
 mod evidence;
 mod native;
 
-pub use evidence::{Snapshot, inspect, validate_ancestors};
+pub use evidence::{FolderContents, Snapshot, inspect, inspect_contents, validate_ancestors};
 pub use native::NativeTrash;
 
 use std::io;

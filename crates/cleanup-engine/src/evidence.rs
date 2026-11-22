@@ -1,6 +1,6 @@
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Read};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 
@@ -60,7 +60,31 @@ fn has_traversal(path: &Path) -> bool {
     parsed
 }
 
+/// What a non-empty folder held when it was inspected: shown before it moves, and fixed by
+/// the snapshot's digest so the move is refused if anything inside changes first.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FolderContents {
+    pub files: u64,
+    pub folders: u64,
+    /// Links and reparse points inside; they move as links, never followed.
+    pub links: u64,
+    pub read_only: u64,
+    pub logical_bytes: u64,
+    /// The largest files by path relative to the folder, largest first.
+    pub largest: Vec<(PathBuf, u64)>,
+}
+
+const LARGEST_SHOWN: usize = 8;
+
 pub fn inspect(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> {
+    inspect_contents(path, cancel).map(|(snapshot, _)| snapshot)
+}
+
+/// Like `inspect`, also listing a non-empty folder's contents for confirmation.
+pub fn inspect_contents(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<(Snapshot, Option<FolderContents>)> {
     validate_ancestors(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if assess_risk(path, metadata.permissions().readonly()).tier == RiskTier::Protected {
@@ -68,15 +92,22 @@ pub fn inspect(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> {
             "Protected locations and read-only items cannot be queued for cleanup",
         ));
     }
-    capture(path, cancel)
+    capture_contents(path, cancel)
 }
 
 pub(crate) fn capture(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> {
+    capture_contents(path, cancel).map(|(snapshot, _)| snapshot)
+}
+
+fn capture_contents(
+    path: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<(Snapshot, Option<FolderContents>)> {
     crate::cancelled(cancel)?;
     let before = fs::symlink_metadata(path)?;
     if is_link(&before) || !(before.is_file() || before.is_dir()) {
         return Err(io::Error::other(
-            "Only regular files and observed empty directories are supported",
+            "Only regular files and folders are supported, not links",
         ));
     }
     reject_placeholder(&before)?;
@@ -89,11 +120,16 @@ pub(crate) fn capture(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> 
             "Hard-linked files are excluded from cleanup; their physical-space ownership is ambiguous",
         ));
     }
+    let mut contents = None;
     let sha256 = if metadata.is_dir() {
-        if fs::read_dir(path)?.next().transpose()?.is_some() {
-            return Err(io::Error::other("The directory is no longer empty"));
+        // An empty folder has no digest, so one that gains entries no longer matches its proof.
+        if fs::read_dir(path)?.next().transpose()?.is_none() {
+            None
+        } else {
+            let (digest, listed) = walk_folder(path, cancel)?;
+            contents = Some(listed);
+            Some(digest)
         }
-        None
     } else {
         let mut reader = &file;
         let mut hash = Sha256::new();
@@ -121,14 +157,76 @@ pub(crate) fn capture(path: &Path, cancel: &AtomicBool) -> io::Result<Snapshot> 
     {
         return Err(io::Error::other("Item changed during validation"));
     }
-    Ok(Snapshot {
+    let snapshot = Snapshot {
         identity,
         version,
         sha256,
-        logical_bytes: if metadata.is_dir() { 0 } else { metadata.len() },
-        allocated_bytes: allocated,
+        logical_bytes: match &contents {
+            Some(contents) => contents.logical_bytes,
+            None if metadata.is_dir() => 0,
+            None => metadata.len(),
+        },
+        // A folder's own blocks say nothing about the space its contents hold.
+        allocated_bytes: if contents.is_some() { None } else { allocated },
         directory: metadata.is_dir(),
-    })
+    };
+    Ok((snapshot, contents))
+}
+
+/// Walks a folder without following links. The digest covers every entry's relative path,
+/// kind, size, modified time and (on Unix) inode, so any addition, removal, edit or swap
+/// inside changes it. Moving the folder keeps all of these, so the Trash copy still matches.
+fn walk_folder(root: &Path, cancel: &AtomicBool) -> io::Result<([u8; 32], FolderContents)> {
+    let mut hash = Sha256::new();
+    let mut contents = FolderContents::default();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let mut names = fs::read_dir(root.join(&relative))?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<Vec<_>>>()?;
+        names.sort();
+        for name in names {
+            crate::cancelled(cancel)?;
+            let path = relative.join(name);
+            let metadata = fs::symlink_metadata(root.join(&path))?;
+            reject_placeholder(&metadata)?;
+            let kind = if is_link(&metadata) {
+                contents.links += 1;
+                b'l'
+            } else if metadata.is_dir() {
+                contents.folders += 1;
+                pending.push(path.clone());
+                b'd'
+            } else {
+                contents.files += 1;
+                contents.logical_bytes = contents.logical_bytes.saturating_add(metadata.len());
+                b'f'
+            };
+            if metadata.permissions().readonly() {
+                contents.read_only += 1;
+            }
+            let mut record = path.as_os_str().as_encoded_bytes().to_vec();
+            record.extend_from_slice(&[0, kind]);
+            record.extend_from_slice(&metadata.len().to_le_bytes());
+            append_time(&mut record, metadata.modified()?);
+            #[cfg(unix)]
+            record.extend_from_slice(&std::os::unix::fs::MetadataExt::ino(&metadata).to_le_bytes());
+            hash.update(&record);
+            if kind == b'f' {
+                let largest = &mut contents.largest;
+                if largest.len() < LARGEST_SHOWN
+                    || largest
+                        .last()
+                        .is_some_and(|(_, bytes)| *bytes < metadata.len())
+                {
+                    largest.push((path, metadata.len()));
+                    largest.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
+                    largest.truncate(LARGEST_SHOWN);
+                }
+            }
+        }
+    }
+    Ok((hash.finalize().into(), contents))
 }
 
 pub(crate) fn check_version(path: &Path, expected: &Snapshot) -> io::Result<()> {

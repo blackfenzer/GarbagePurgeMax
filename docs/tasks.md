@@ -82,7 +82,8 @@ Implemented in the 0.3.0 development build. Scans remain read-only. See [cleanup
 - [x] Implement native macOS Trash and Windows Recycle Bin adapters without a permanent-deletion fallback. Show per-item validation errors, receipts, and uncertain outcomes. **Native acceptance pending below.**
 - [x] Persist durable intents, receipts and outcomes; implement no-overwrite restore, cancellation, partial failures, and read-only reconciliation. Inject interruption and journal-write failures on disposable fixtures.
 - [x] Separate logical bytes, potential allocation upper bounds, expected immediate release (zero), and observed free-space change. Block hard links and detected placeholders; disclose clone/compression/sparse/cloud uncertainty.
-- [ ] Complete native macOS Trash/restore and interactive acceptance. The disposable native test was attempted and rejected by filesystem permissions; no successful native round trip is claimed.
+- [x] Move a chosen file or folder to Trash from Files, Tree or Space Map after a contents preview, journaled and restorable like the queue.
+- [ ] Complete native macOS Trash/restore and interactive acceptance, including a non-empty folder moved from Files or Tree. The disposable native test was attempted and rejected by filesystem permissions; no successful native round trip is claimed.
 - [ ] Compile and run native Windows cleanup/recovery acceptance, including collisions, unavailable Recycle Bin, permissions, interruptions, and mounted volumes. Deferred on this Mac at the user's request.
 
 ## v1.0 · Product hardening

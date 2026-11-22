@@ -10,6 +10,7 @@ mod scan;
 mod space_map;
 mod storage;
 mod theme;
+mod trash;
 #[cfg(feature = "ui-smoke")]
 pub(crate) mod ui_smoke;
 
@@ -53,10 +54,23 @@ pub(crate) struct Workspace {
     deck_left: Page,
     deck_right: Page,
     preferences: preferences::Preferences,
+    /// The Move to Trash dialog, drawn over either layout while open.
+    trash: Option<trash::TrashPrompt>,
 }
 
 impl Render for Workspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let layout = self.layout(cx);
+        div()
+            .relative()
+            .size_full()
+            .child(layout)
+            .children(self.trash_overlay(cx))
+    }
+}
+
+impl Workspace {
+    fn layout(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.theme == AppTheme::AmberDeck {
             // Amber Deck always shows Space Map, so follow the scan open in Scan Results.
             if self.space_map.scan_id() != self.results.saved_scan().map(|scan| scan.id) {
@@ -123,6 +137,7 @@ impl Workspace {
             overview,
             review: review::Review::default(),
             cleanup: cleanup::Cleanup::default(),
+            trash: None,
         }
     }
 
@@ -137,7 +152,11 @@ impl Workspace {
             Page::SpaceMap => self.space_map.render(cx).into_any_element(),
             Page::Results => self
                 .results
-                .render(self.scan.report.as_ref(), cx)
+                .render(
+                    self.scan.report.as_ref(),
+                    self.theme == AppTheme::AmberDeck,
+                    cx,
+                )
                 .into_any_element(),
             Page::History => self
                 .history

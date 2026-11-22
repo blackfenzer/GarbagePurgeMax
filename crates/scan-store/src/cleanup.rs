@@ -257,6 +257,24 @@ impl CleanupSession<'_> {
                 "The queue changed; review and confirm it again",
             ));
         }
+        self.mark_moving(ids)?;
+        Ok(items)
+    }
+
+    /// Claims one item confirmed on its own, such as a file moved to Trash from Files. The
+    /// rest of the queue stays queued for its own confirmation.
+    pub fn claim_one(&mut self, id: i64) -> io::Result<CleanupItem> {
+        let item = self
+            .store
+            .cleanup_items(true, 200, 0)?
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| io::Error::other("The confirmed item is no longer queued"))?;
+        self.mark_moving(&[id])?;
+        Ok(item)
+    }
+
+    fn mark_moving(&mut self, ids: &[i64]) -> io::Result<()> {
         let transaction = self
             .store
             .0
@@ -277,7 +295,7 @@ impl CleanupSession<'_> {
             }
         }
         transaction.commit().map_err(io::Error::other)?;
-        Ok(items)
+        Ok(())
     }
 
     pub fn transition(

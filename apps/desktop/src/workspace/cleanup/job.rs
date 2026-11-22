@@ -1,19 +1,18 @@
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use cleanup_engine::{TrashBackend, inspect, restore_checked, revalidate, verify_receipt};
-use scan_engine::{cleanup_candidate, volume_space};
-use scan_store::{CleanupState, QueueEntry, SavedScan, ScanStore};
+use cleanup_engine::{
+    FolderContents, TrashBackend, inspect, inspect_contents, restore_checked, revalidate,
+    verify_receipt,
+};
+use scan_engine::{FileRecord, cleanup_candidate, volume_space};
+use scan_store::{CleanupItem, CleanupSession, CleanupState, QueueEntry, SavedScan, ScanStore};
 
-pub(super) fn prepare(
-    store: &ScanStore,
-    scan: &SavedScan,
-    source: &Path,
-    keeper: Option<&Path>,
-    cancel: &AtomicBool,
-) -> io::Result<QueueEntry> {
+/// Checks shared by every cleanup: not excluded, inside the scan root, not the root itself,
+/// no linked ancestors, and not the app's own data.
+fn check_location(store: &ScanStore, scan: &SavedScan, source: &Path) -> io::Result<()> {
     if let Some(database) = store.database_path() {
         super::super::exclusions::check_cleanup(source, database)?;
     }
@@ -31,20 +30,36 @@ pub(super) fn prepare(
             "Storage Clinic's own data cannot be cleaned",
         ));
     }
+    Ok(())
+}
+
+fn check_unchanged(record: &FileRecord, source: &Path) -> io::Result<()> {
+    let current = fs::symlink_metadata(source)?;
+    if current.len() != record.logical_bytes
+        || record.modified != current.modified().ok()
+        || record.created != current.created().ok()
+    {
+        return Err(io::Error::other(
+            "The indexed metadata changed; scan this folder again",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn prepare(
+    store: &ScanStore,
+    scan: &SavedScan,
+    source: &Path,
+    keeper: Option<&Path>,
+    cancel: &AtomicBool,
+) -> io::Result<QueueEntry> {
+    check_location(store, scan, source)?;
     let record = store
         .cleanup_file(scan.id, source)
         .map_err(io::Error::other)?;
     let reason;
     if let Some(record) = &record {
-        let current = fs::symlink_metadata(source)?;
-        if current.len() != record.logical_bytes
-            || record.modified != current.modified().ok()
-            || record.created != current.created().ok()
-        {
-            return Err(io::Error::other(
-                "The indexed metadata changed; scan this folder again",
-            ));
-        }
+        check_unchanged(record, source)?;
         reason = cleanup_candidate(record, scan.started_at()?).map(|candidate| candidate.evidence);
     } else if store
         .cleanup_empty_directory(scan.id, source)
@@ -60,6 +75,12 @@ pub(super) fn prepare(
     let proof = inspect(source, cancel)?;
     if proof.directory != record.is_none() {
         return Err(io::Error::other("The indexed item type changed"));
+    }
+    // A folder seen empty carries no digest; one that has gained entries needs a new scan.
+    if proof.directory && proof.sha256.is_some() {
+        return Err(io::Error::other(
+            "The folder is no longer empty; scan this folder again",
+        ));
     }
     let group = store
         .cleanup_duplicate(scan.id, source)
@@ -113,8 +134,70 @@ pub(super) fn prepare(
     })
 }
 
+/// Prepares a file or folder you picked in Files, Tree or Space Map. Any item in the saved
+/// scan qualifies. A folder's contents are listed now; the move is refused unless they are
+/// exactly the same when you confirm.
+pub(crate) fn prepare_chosen(
+    store: &ScanStore,
+    scan: &SavedScan,
+    source: &Path,
+    cancel: &AtomicBool,
+) -> io::Result<(QueueEntry, Option<FolderContents>)> {
+    check_location(store, scan, source)?;
+    let record = store
+        .cleanup_file(scan.id, source)
+        .map_err(io::Error::other)?;
+    if let Some(record) = &record {
+        check_unchanged(record, source)?;
+    } else if store
+        .folder_summary(scan.id, source)
+        .map_err(io::Error::other)?
+        .files
+        == 0
+        && !store
+            .cleanup_empty_directory(scan.id, source)
+            .map_err(io::Error::other)?
+    {
+        return Err(io::Error::other("The item is not part of the saved scan"));
+    }
+    let (proof, contents) = inspect_contents(source, cancel)?;
+    if proof.directory != record.is_none() {
+        return Err(io::Error::other("The indexed item type changed"));
+    }
+    let reason = match &contents {
+        Some(contents) => format!(
+            "Moved to Trash by you after previewing {} files in {} folders",
+            contents.files, contents.folders
+        ),
+        None if proof.directory => "Moved to Trash by you: an empty folder".into(),
+        None => "Moved to Trash by you".into(),
+    };
+    let entry = QueueEntry {
+        scan_id: scan.id,
+        source: source.to_path_buf(),
+        proof,
+        keeper: None,
+        reason,
+    };
+    Ok((entry, contents))
+}
+
+/// Records and moves one confirmed item, leaving the rest of the queue untouched.
+pub(crate) fn execute_chosen(
+    store: &mut ScanStore,
+    entry: &QueueEntry,
+    backend: &impl TrashBackend,
+    cancel: &AtomicBool,
+) -> io::Result<Outcome> {
+    let database = store.database_path().map(Path::to_path_buf);
+    let mut session = store.cleanup_session()?;
+    let id = session.enqueue(entry)?;
+    let item = session.claim_one(id)?;
+    run(&mut session, database, &[item], backend, cancel, |_, _| {})
+}
+
 #[derive(Default)]
-pub(super) struct Outcome {
+pub(crate) struct Outcome {
     pub moved: usize,
     pub failed: usize,
     pub cancelled: bool,
@@ -125,11 +208,23 @@ pub(super) fn execute(
     ids: &[i64],
     backend: &impl TrashBackend,
     cancel: &AtomicBool,
-    mut progress: impl FnMut(usize, usize),
+    progress: impl FnMut(usize, usize),
 ) -> io::Result<Outcome> {
     let database = store.database_path().map(Path::to_path_buf);
     let mut session = store.cleanup_session()?;
     let items = session.claim(ids)?;
+    run(&mut session, database, &items, backend, cancel, progress)
+}
+
+/// Moves claimed items one at a time, rechecking each just before its native action.
+fn run(
+    session: &mut CleanupSession,
+    database: Option<PathBuf>,
+    items: &[CleanupItem],
+    backend: &impl TrashBackend,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(usize, usize),
+) -> io::Result<Outcome> {
     let mut outcome = Outcome::default();
     for (index, item) in items.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
