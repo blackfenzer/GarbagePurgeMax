@@ -504,7 +504,9 @@ impl Results {
                         (!scope.is_empty()).then(|| div().text_sm().text_color(muted).child(scope)),
                     )
                     .children(show_table.then(|| {
-                        div().flex().flex_col().flex_1().min_h(px(0.)).child(
+                        // Fills the page when there is room; in a narrow or scrolling panel it
+                        // keeps about eight rows and the panel scrolls instead.
+                        div().flex().flex_col().flex_1().min_h(px(320.)).child(
                             DataTable::new(&self.table)
                                 .small()
                                 .accessibility_label("Scan files"),

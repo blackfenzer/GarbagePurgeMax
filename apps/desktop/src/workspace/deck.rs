@@ -247,15 +247,17 @@ fn panel(workspace: &Workspace, side: Side, current: Page, cx: &Context<Workspac
         .bg(theme.sidebar)
         .overflow_hidden()
         .child(strip)
-        .child(match side {
-            // The map and its inspector can be taller than the panel; list pages scroll themselves.
-            Side::Left => div()
-                .id("deck-left-body")
+        // The panel scrolls; the page inside takes its natural height, so long maps, inspectors
+        // and tables extend the scroll instead of being clipped or squeezed.
+        .child(
+            div()
+                .id(match side {
+                    Side::Left => "deck-left-body",
+                    Side::Right => "deck-right-body",
+                })
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
-                .child(body)
-                .into_any_element(),
-            Side::Right => div().flex_1().min_h(px(0.0)).child(body).into_any_element(),
-        })
+                .child(div().w_full().child(body)),
+        )
 }
