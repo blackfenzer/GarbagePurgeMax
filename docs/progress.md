@@ -1,5 +1,11 @@
 # Development progress
 
+## 2026-11-22 · Treemap shadows and gradients
+
+Follow-up: boxes are rounder (12 px, sub-boxes 8 px) and float with a softer, deeper shadow; the map and its gaps use the app background colour. A folder's sub-boxes sit together in one rounded holder in the app background colour with 3 px of space inside its edge and 1.5 px around each sub-box (1.5 px gutters between top-level boxes). Corner radii shrink to a third of a box's shorter side, so small boxes stay boxes instead of pills or dots; boxes under 3 px are left out, and a holder is skipped when its contents would have less than 40×24 px. Names are bold in full ink and sizes are the same ink dimmed, like provinces on a map, instead of a ring around each child.
+
+Treemap boxes and sub-boxes drop their borders: each sits in a small gutter with rounded corners and a soft drop shadow, and the selected box gets a ring. Every box is filled with its type colour as a fixed top-left-to-bottom-right gradient (`box_fill`) instead of being shaded by size, so neighbours of similar size stay distinct; sub-boxes use their own entries' type colours. Checks: fmt, Clippy (with and without `ui-smoke`), workspace tests, UI smoke run with screenshot review of both themes, Windows lint.
+
 ## 2026-11-22 · Per-theme palettes, labelled boxes, theme picker, active years
 
 - **Palettes.** File-type colours now follow the theme: Amber Deck uses "Ember" (rust, ochre, sage, wine) with dark labels; Workbench uses "Slate jewel" (deeper blue, teal, plum) with light labels. `AppTheme::apply` records the active palette for `type_color` and `on_type_color`.

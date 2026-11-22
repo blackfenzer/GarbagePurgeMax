@@ -2,6 +2,7 @@
 
 ## Footer stats and nested treemap — 2026-11-22
 
+- Treemap boxes are rounded and float on the page with soft shadows and a fixed colour gradient; a folder's sub-boxes float together in one rounded holder in the app background colour instead of having borders.
 - Each theme has its own file-type palette: Ember for Amber Deck, Slate jewel for Workbench.
 - Treemap boxes label themselves as far as they fit: name and size, name, icon, then nothing; sub-boxes are named too.
 - The theme switch is a swatch button with a theme menu, the year graph shows only active years, and the footer's progress bar shows the open folder's share of the scan.

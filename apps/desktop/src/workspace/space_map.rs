@@ -12,7 +12,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
+    AppContext as _, Context, Div, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, Task, div, img, px, relative,
 };
 use scan_engine::{VolumeSpace, volume_space};
@@ -389,7 +389,10 @@ impl SpaceMap {
                 div()
                     .w(px(76.0))
                     .text_right()
-                    .child(format!("-{}", format_bytes(total.saturating_sub(played)))),
+                    .child(match total.saturating_sub(played) {
+                        0 => format_bytes(0),
+                        left => format!("-{}", format_bytes(left)),
+                    }),
             )
             .child(separator())
             .child(
@@ -895,7 +898,13 @@ impl SpaceMap {
         let sizes: Vec<u64> = entries.iter().map(|entry| entry.logical_bytes).collect();
         // Without a fixed height the map fills its container; lay it out for a typical one.
         let height = fixed_height.unwrap_or(width * 0.7);
-        let map = div().relative().w_full().bg(theme.muted).overflow_hidden();
+        // Boxes float on the app background, which also shows in the gaps between them.
+        let map = div()
+            .relative()
+            .w_full()
+            .rounded(px(14.0))
+            .bg(theme.background)
+            .overflow_hidden();
         let mut map = match fixed_height {
             // Keep its height inside a crowded column instead of shrinking away.
             Some(height) => map.h(px(height)).flex_shrink_0(),
@@ -906,11 +915,15 @@ impl SpaceMap {
             let index = block.index;
             let (block_width, block_height) = (block.width * width, block.height * height);
             let label = BoxLabel::fits(block_width, block_height);
-            let nested = self
-                .nested
-                .get(&index)
-                .filter(|_| block_width >= 56.0 && block_height >= 72.0)
-                .map(|entries| nested_blocks(entries, block_width, block_height, label));
+            // Too small to see: leave the gap showing rather than draw a dot.
+            if block_width < 3.0 || block_height < 3.0 {
+                continue;
+            }
+            let (box_width, box_height) = (block_width - 2.0 * GUTTER, block_height - 2.0 * GUTTER);
+            let nested = self.nested.get(&index).and_then(|entries| {
+                nested_blocks(entries, box_width, box_height, label, theme.background)
+            });
+            // A gutter around each box lets its shadow separate it from its neighbours.
             map = map.child(
                 div()
                     .id((id, index))
@@ -919,22 +932,28 @@ impl SpaceMap {
                     .top(relative(block.y))
                     .w(relative(block.width))
                     .h(relative(block.height))
-                    .bg(type_color(entry.main_type))
-                    .border_1()
-                    .border_color(theme.background)
-                    .when(self.selected == Some(index), |block| {
-                        block.border_2().border_color(theme.foreground)
-                    })
-                    .p_1()
-                    .overflow_hidden()
+                    .p(px(GUTTER))
                     .cursor_pointer()
-                    .text_xs()
-                    .text_color(on_type_color())
                     .on_click(cx.listener(move |workspace, _, _, cx| {
                         workspace.space_map.choose(index, cx);
                     }))
-                    .child(label.render(entry, true))
-                    .children(nested),
+                    .child(
+                        div()
+                            .relative()
+                            .size_full()
+                            .p(px(BOX_PADDING))
+                            .rounded(px(corner(box_width, box_height, 10.0)))
+                            .overflow_hidden()
+                            .bg(box_fill(type_color(entry.main_type)))
+                            .shadow(box_shadow(
+                                4.0,
+                                (self.selected == Some(index)).then_some(theme.foreground),
+                            ))
+                            .text_xs()
+                            .text_color(on_type_color())
+                            .child(label.render(entry))
+                            .children(nested),
+                    ),
             );
         }
         map
@@ -1068,11 +1087,11 @@ enum BoxLabel {
 
 impl BoxLabel {
     fn fits(width: f32, height: f32) -> Self {
-        if width >= 70.0 && height >= 34.0 {
+        if width >= 64.0 && height >= 46.0 {
             Self::NameAndSize
-        } else if width >= 44.0 && height >= 18.0 {
+        } else if width >= 40.0 && height >= 27.0 {
             Self::Name
-        } else if width >= 18.0 && height >= 18.0 {
+        } else if width >= 20.0 && height >= 20.0 {
             Self::Icon
         } else {
             Self::Blank
@@ -1082,23 +1101,32 @@ impl BoxLabel {
     /// Room the label takes at the top of its box.
     fn height(self) -> f32 {
         match self {
-            Self::NameAndSize => 44.0,
-            Self::Name => 24.0,
-            Self::Icon | Self::Blank => 3.0,
+            // Padding plus two or one 19 px text lines, plus a little air.
+            Self::NameAndSize => 46.0,
+            Self::Name => 27.0,
+            Self::Icon | Self::Blank => HOLDER_EDGE,
         }
     }
 
-    fn render(self, entry: &FolderEntry, bold: bool) -> gpui_kit::AnyElement {
+    /// The name is bold in full ink; the size underneath is the same ink, dimmed.
+    fn render(self, entry: &FolderEntry) -> gpui_kit::AnyElement {
         let name = || {
             div()
                 .text_ellipsis()
-                .when(bold, |name| name.font_semibold())
+                .font_semibold()
                 .child(entry_label(entry))
         };
         match self {
             Self::NameAndSize => div()
                 .child(name())
-                .child(format_bytes(entry.logical_bytes))
+                .child(
+                    div()
+                        .text_color(Hsla {
+                            a: 0.62,
+                            ..on_type_color()
+                        })
+                        .child(format_bytes(entry.logical_bytes)),
+                )
                 .into_any_element(),
             Self::Name => name().into_any_element(),
             Self::Icon => img(crate::file_icons::icon_path(&entry.name, entry.is_folder))
@@ -1109,29 +1137,97 @@ impl BoxLabel {
     }
 }
 
-/// A folder's own entries as sub-boxes inside its block, under its label. Each is shaded
-/// by size, the largest lightest, and labelled as far as its size allows.
+/// A box's fill: its type colour lightened toward the top-left and deepened toward the
+/// bottom-right. The same gradient on every box keeps neighbours of similar size distinct.
+fn box_fill(color: Hsla) -> gpui_kit::Background {
+    let lighter = Hsla {
+        l: (color.l + 0.08).min(0.95),
+        ..color
+    };
+    let darker = Hsla {
+        l: (color.l - 0.10).max(0.05),
+        ..color
+    };
+    gpui_kit::linear_gradient(
+        135.0,
+        gpui_kit::linear_color_stop(lighter, 0.0),
+        gpui_kit::linear_color_stop(darker, 1.0),
+    )
+}
+
+/// Shadows that make a box float instead of drawing a border: a drop shadow `lift` pixels
+/// deep, plus a ring when the box is selected.
+fn box_shadow(lift: f32, selected: Option<Hsla>) -> Vec<gpui_kit::BoxShadow> {
+    let mut shadows = vec![gpui_kit::BoxShadow {
+        color: gpui_kit::hsla(0.0, 0.0, 0.0, 0.4),
+        offset: gpui_kit::point(px(0.0), px(lift)),
+        blur_radius: px(lift * 3.0),
+        spread_radius: px(0.0),
+        inset: false,
+    }];
+    shadows.extend(selected.map(|color| gpui_kit::BoxShadow {
+        color,
+        offset: gpui_kit::point(px(0.0), px(0.0)),
+        blur_radius: px(0.0),
+        spread_radius: px(2.0),
+        inset: false,
+    }));
+    shadows
+}
+
+/// Space around each top-level box, so its shadow separates it from its neighbours.
+const GUTTER: f32 = 1.5;
+/// Space between a box's edge and its label.
+const BOX_PADDING: f32 = 5.0;
+/// Space between a holder and its parent box's edge.
+const HOLDER_EDGE: f32 = 2.0;
+/// Space inside a holder around the sub-boxes, and around each sub-box.
+const HOLDER_PADDING: f32 = 3.0;
+const CHILD_GAP: f32 = 1.5;
+
+/// A corner radius no more than a third of the box's shorter side, so small boxes stay
+/// boxes instead of turning into pills and dots.
+fn corner(width: f32, height: f32, largest: f32) -> f32 {
+    largest.min(width.min(height) / 3.0).max(0.0)
+}
+
+/// A folder's own entries inside its `width` × `height` box, under its label: one rounded
+/// holder in the app background colour, like a province on a map, with the sub-boxes
+/// floating in it, each in its own type colour and labelled as far as its size allows.
+/// Nothing when the holder would be too small to show its contents.
 fn nested_blocks(
     entries: &[FolderEntry],
     width: f32,
     height: f32,
     label: BoxLabel,
-) -> impl IntoElement {
+    holder: Hsla,
+) -> Option<gpui_kit::Div> {
     let top = label.height();
-    let (inner_width, inner_height) = (width - 6.0, (height - top - 3.0).max(1.0));
+    let (holder_width, holder_height) = (width - 2.0 * HOLDER_EDGE, height - top - HOLDER_EDGE);
+    let (inner_width, inner_height) = (
+        holder_width - 2.0 * HOLDER_PADDING,
+        holder_height - 2.0 * HOLDER_PADDING,
+    );
+    if inner_width < 40.0 || inner_height < 24.0 {
+        return None;
+    }
     let sizes: Vec<u64> = entries.iter().map(|entry| entry.logical_bytes).collect();
-    let largest = sizes.iter().copied().max().unwrap_or(1).max(1);
     let mut area = div()
         .absolute()
-        .left(px(3.0))
-        .right(px(3.0))
-        .bottom(px(3.0))
-        .top(px(top));
+        .top(px(HOLDER_PADDING))
+        .left(px(HOLDER_PADDING))
+        .right(px(HOLDER_PADDING))
+        .bottom(px(HOLDER_PADDING));
     for block in treemap(&sizes, inner_width / inner_height) {
         let entry = &entries[block.index];
-        // Kept light enough that the label ink stays readable on either palette.
-        let shade = 0.3 * (1.0 - fraction(entry.logical_bytes, largest));
-        let label = BoxLabel::fits(block.width * inner_width, block.height * inner_height);
+        let (child_width, child_height) = (
+            block.width * inner_width - 2.0 * CHILD_GAP,
+            block.height * inner_height - 2.0 * CHILD_GAP,
+        );
+        if child_width < 3.0 || child_height < 3.0 {
+            continue;
+        }
+        let label = BoxLabel::fits(child_width, child_height);
         area = area.child(
             div()
                 .absolute()
@@ -1139,15 +1235,31 @@ fn nested_blocks(
                 .top(relative(block.y))
                 .w(relative(block.width))
                 .h(relative(block.height))
-                .p(px(2.0))
-                .overflow_hidden()
-                .bg(gpui_kit::hsla(0.0, 0.0, 0.0, shade))
-                .border_1()
-                .border_color(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
-                .child(label.render(entry, false)),
+                .p(px(CHILD_GAP))
+                .child(
+                    div()
+                        .size_full()
+                        .p(px(4.0))
+                        .rounded(px(corner(child_width, child_height, 7.0)))
+                        .overflow_hidden()
+                        .bg(box_fill(type_color(entry.main_type)))
+                        .shadow(box_shadow(2.0, None))
+                        .child(label.render(entry)),
+                ),
         );
     }
-    area
+    Some(
+        div()
+            .absolute()
+            .left(px(HOLDER_EDGE))
+            .right(px(HOLDER_EDGE))
+            .bottom(px(HOLDER_EDGE))
+            .top(px(top))
+            .rounded(px(corner(holder_width, holder_height, 8.0)))
+            .overflow_hidden()
+            .bg(holder)
+            .child(area),
+    )
 }
 
 /// The years worth a bar: at least 2% of the busiest year's bytes, the latest ten of them,
@@ -1265,7 +1377,7 @@ mod tests {
     #[test]
     fn box_labels_shrink_step_by_step_and_years_skip_stray_files() {
         assert_eq!(BoxLabel::fits(120.0, 60.0), BoxLabel::NameAndSize);
-        assert_eq!(BoxLabel::fits(60.0, 20.0), BoxLabel::Name);
+        assert_eq!(BoxLabel::fits(60.0, 30.0), BoxLabel::Name);
         assert_eq!(BoxLabel::fits(24.0, 24.0), BoxLabel::Icon);
         assert_eq!(BoxLabel::fits(10.0, 40.0), BoxLabel::Blank);
         let mut years: Vec<(i32, u64)> = (2000..2026).map(|year| (year, 1_000)).collect();
