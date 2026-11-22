@@ -350,7 +350,9 @@ fn totals_each_folder_level_for_the_space_map() -> Result<(), Box<dyn std::error
         // Shares a name prefix with Movies but is not inside it.
         ("Moviesx.txt", 1),
     ] {
-        writer.insert_file(&file(root.join(path).to_str().unwrap(), bytes))?;
+        // Native separators: Windows stores `Movies/trip.mov` as written, outside `Movies\`.
+        let path = root.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        writer.insert_file(&file(path.to_str().unwrap(), bytes))?;
     }
     let scan = writer.finish(&summary(6, false), 0)?;
     let entry = |name: &str, is_folder, files, logical_bytes, main_type| FolderEntry {
@@ -760,9 +762,10 @@ fn age_filter_and_time_sort_preserve_nanoseconds_and_put_unknown_dates_last()
     let root = tempfile::tempdir()?;
     let mut store = ScanStore::open(&root.path().join("scan.sqlite3"))?;
     let mut writer = store.begin_scan(root.path(), 100)?;
+    // Windows clocks tick every 100 ns, so smaller steps would round to the same time.
     for (name, modified) in [
-        ("early", Some(UNIX_EPOCH + Duration::from_nanos(1))),
-        ("late", Some(UNIX_EPOCH + Duration::from_nanos(3))),
+        ("early", Some(UNIX_EPOCH + Duration::from_nanos(100))),
+        ("late", Some(UNIX_EPOCH + Duration::from_nanos(300))),
         ("unknown", None),
     ] {
         writer.insert_file(&FileRecord {
@@ -780,7 +783,7 @@ fn age_filter_and_time_sort_preserve_nanoseconds_and_put_unknown_dates_last()
     };
     assert_eq!(
         names(FileFilter {
-            modified_before: Some(UNIX_EPOCH + Duration::from_nanos(2)),
+            modified_before: Some(UNIX_EPOCH + Duration::from_nanos(200)),
             ..FileFilter::default()
         })?,
         vec![PathBuf::from("early")]
