@@ -44,6 +44,14 @@ impl Drop for Cleanup {
 }
 
 impl Cleanup {
+    /// Queued items and their total logical size, for the Amber Deck footer.
+    pub(super) fn queue_summary(&self) -> (usize, u64) {
+        let bytes = self.queue.iter().fold(0_u64, |sum, item| {
+            sum.saturating_add(item.entry.proof.logical_bytes)
+        });
+        (self.queue.len(), bytes)
+    }
+
     pub(super) fn load(&mut self, offset: u64, cx: &mut Context<Workspace>) {
         if self.busy {
             return;

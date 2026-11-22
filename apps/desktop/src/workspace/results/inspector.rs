@@ -10,23 +10,7 @@ use scan_engine::{FileRecord, assess_risk, cleanup_candidate, file_type};
 use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
-use super::{SampleFile, Workspace};
-
-pub(super) fn sample_file(file: &SampleFile, cx: &Context<Workspace>) -> Div {
-    let muted = cx.theme().muted_foreground;
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(div().font_semibold().child(file.name))
-        .child(div().text_sm().text_color(muted).child(file.folder))
-        .child(
-            div()
-                .text_sm()
-                .child(format!("{} · {}", file.size, file.finding)),
-        )
-        .child(div().text_sm().text_color(muted).child(file.explanation))
-}
+use super::Workspace;
 
 pub(super) fn scanned_file(
     file: &FileRecord,

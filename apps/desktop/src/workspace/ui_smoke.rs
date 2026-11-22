@@ -103,8 +103,7 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
 
     for theme in AppTheme::ALL {
         window.update(&mut cx, |workspace, _, cx| {
-            workspace.theme = theme;
-            theme.apply(cx);
+            use_theme(workspace, theme, cx);
         })?;
         for (page, name) in PAGES {
             window.update(&mut cx, |workspace, _, cx| {
@@ -247,8 +246,7 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
             ),
         ] {
             window.update(&mut cx, |workspace, _, cx| {
-                workspace.theme = theme;
-                theme.apply(cx);
+                use_theme(workspace, theme, cx);
                 workspace.show_page(Page::Review);
                 workspace.load_page(Page::Review, cx);
                 workspace.review.show(kind, cx);
@@ -259,6 +257,12 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// Switches theme the way the theme menu does.
+fn use_theme(workspace: &mut Workspace, theme: AppTheme, cx: &mut gpui::Context<Workspace>) {
+    workspace.theme = theme;
+    theme.apply(cx);
 }
 
 fn ensure(condition: bool, what: &str) -> Result<(), Box<dyn Error>> {

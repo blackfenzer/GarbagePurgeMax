@@ -48,38 +48,6 @@ use file_table::FileRows;
 pub(super) use file_table::RowAction;
 use saved::{PAGE_SIZE, SavedResults};
 
-struct SampleFile {
-    name: &'static str,
-    folder: &'static str,
-    size: &'static str,
-    finding: &'static str,
-    explanation: &'static str,
-}
-
-const SAMPLE_FILES: &[SampleFile] = &[
-    SampleFile {
-        name: "studio-backup.zip",
-        folder: "Example / Archives",
-        size: "2.4 GiB",
-        finding: "Large file",
-        explanation: "This archive exceeds the example 1 GiB large-file threshold.",
-    },
-    SampleFile {
-        name: "coast-export.png",
-        folder: "Example / Design",
-        size: "28.6 MiB",
-        finding: "Exact duplicate",
-        explanation: "In this example, both images have the same size and matching full-content hashes.",
-    },
-    SampleFile {
-        name: "coast-export-copy.png",
-        folder: "Example / Downloads",
-        size: "28.6 MiB",
-        finding: "Exact duplicate",
-        explanation: "In this example, both images have the same size and matching full-content hashes.",
-    },
-];
-
 pub(super) struct Results {
     input: Entity<InputState>,
     table: Entity<TableState<FileRows>>,
@@ -107,7 +75,7 @@ impl Results {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Workspace>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search file paths"));
         let table = cx.new(|cx| {
-            TableState::new(FileRows::samples(), window, cx)
+            TableState::new(FileRows::from_files(&[], 0, "", None), window, cx)
                 .col_selectable(false)
                 .col_movable(false)
         });
@@ -329,13 +297,13 @@ impl Results {
                     detail,
                 )
             }
-            (None, None) => {
-                let detail = selected
-                    .and_then(|index| SAMPLE_FILES.get(index))
-                    .map(|file| inspector::sample_file(file, cx));
-                let scope = format!("{} of {} sample files", matches, files);
-                ("Sample data".into(), scope, None, None, detail)
-            }
+            (None, None) => (
+                "No scan yet. Choose a folder to scan, or open one from Scan History.".into(),
+                String::new(),
+                None,
+                None,
+                None,
+            ),
         };
         let selected_file = self.saved.as_ref().and_then(|saved| {
             let file = selected.and_then(|index| saved.files.get(index))?;

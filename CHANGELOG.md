@@ -1,5 +1,14 @@
 # Changelog
 
+## Footer stats and nested treemap — 2026-11-22
+
+- Each theme has its own file-type palette: Ember for Amber Deck, Slate jewel for Workbench.
+- Treemap boxes label themselves as far as they fit: name and size, name, icon, then nothing; sub-boxes are named too.
+- The theme switch is a swatch button with a theme menu, the year graph shows only active years, and the footer's progress bar shows the open folder's share of the scan.
+- Amber Deck's footer adds a transport row (size up to and after the selection, cleanup queue, disk use) and a file-types chart; its graphs scale when the footer is resized.
+- Space Map treemap blocks for the largest folders show their contents as sub-boxes shaded by size.
+- Scan Results no longer shows sample files before the first scan.
+
 ## Move to Trash and Review redesign — 2026-11-22
 
 - Files rows have Details and Move to Trash buttons; in Amber Deck clicking a row opens a details dialog.

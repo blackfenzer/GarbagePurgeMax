@@ -1,5 +1,6 @@
 //! Space Map: a saved scan's folders by size, as a WizTree-style list and a treemap.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,7 @@ use gpui_kit::{
     AppContext as _, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _,
     StatefulInteractiveElement as _, Styled as _, Task, div, img, px, relative,
 };
+use scan_engine::{VolumeSpace, volume_space};
 use scan_store::{FolderEntry, FolderSummary, SavedScan};
 
 use super::theme::{on_type_color, type_color};
@@ -25,6 +27,10 @@ const MAX_ROWS: usize = 300;
 const MAX_BLOCKS: usize = 60;
 const TREEMAP_WIDTH: f32 = 440.0;
 const TREEMAP_HEIGHT: f32 = 320.0;
+/// Largest folders whose own contents are drawn as sub-boxes inside their treemap block.
+const NESTED_FOLDERS: usize = 12;
+/// Sub-boxes drawn inside one block.
+const NESTED_BLOCKS: usize = 24;
 
 #[derive(Default)]
 pub(super) struct SpaceMap {
@@ -39,6 +45,11 @@ pub(super) struct SpaceMap {
     /// Logical bytes by last-modified year for the whole scan, for the Amber Deck footer.
     pub(super) years: Vec<(i32, u64)>,
     years_request: Option<Task<()>>,
+    /// The scan volume's capacity and free space, for the footer's disk meter.
+    disk: Option<VolumeSpace>,
+    /// Sizes of the largest folders' own entries, by position in `summary.entries`.
+    nested: HashMap<usize, Vec<FolderEntry>>,
+    nested_request: Option<Task<()>>,
 }
 
 impl SpaceMap {
@@ -69,24 +80,29 @@ impl SpaceMap {
         self.scan.as_ref().map(|scan| scan.id)
     }
 
+    /// Loads the footer's whole-scan data: size by year and the volume's free space.
     fn load_years(&mut self, cx: &mut Context<Workspace>) {
         self.years.clear();
-        let Some(scan_id) = self.scan_id() else {
+        self.disk = None;
+        let Some(scan) = &self.scan else {
             self.years_request = None;
             return;
         };
+        let scan_id = scan.id;
+        let root = scan.root.clone();
         self.years_request = Some(cx.spawn(async move |workspace, cx| {
-            let years = cx
+            let (years, disk) = cx
                 .background_spawn(async move {
-                    storage::open()?
-                        .modified_years(scan_id)
-                        .map_err(io::Error::other)
+                    let years = storage::open()
+                        .and_then(|store| store.modified_years(scan_id).map_err(io::Error::other));
+                    (years, volume_space(&root).ok())
                 })
                 .await;
             let _ = workspace.update(cx, |workspace, cx| {
                 if workspace.space_map.scan_id() != Some(scan_id) {
                     return;
                 }
+                workspace.space_map.disk = disk;
                 match years {
                     Ok(years) => workspace.space_map.years = years,
                     Err(error) => log::warn!("Could not total modified years: {error}"),
@@ -103,6 +119,8 @@ impl SpaceMap {
         let scan_id = scan.id;
         self.folder = folder.clone();
         self.summary = None;
+        self.nested.clear();
+        self.nested_request = None;
         self.selected = None;
         self.error = None;
         self.loading = true;
@@ -122,13 +140,61 @@ impl SpaceMap {
                 }
                 map.loading = false;
                 match result {
-                    Ok(summary) => map.summary = Some(summary),
+                    Ok(summary) => {
+                        map.summary = Some(summary);
+                        map.load_nested(cx);
+                    }
                     Err(error) => map.error = Some(format!("Could not total folders: {error}")),
                 }
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    /// Totals the largest folders' own entries in the background, so their treemap blocks
+    /// can show what is inside them. One query per folder, at most `NESTED_FOLDERS`.
+    fn load_nested(&mut self, cx: &mut Context<Workspace>) {
+        let (Some(scan_id), Some(summary)) = (self.scan_id(), &self.summary) else {
+            return;
+        };
+        let folder = self.folder.clone();
+        let folders: Vec<(usize, PathBuf)> = summary
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.is_folder)
+            .take(NESTED_FOLDERS)
+            .map(|(index, entry)| (index, folder.join(&entry.name)))
+            .collect();
+        self.nested_request = Some(cx.spawn(async move |workspace, cx| {
+            let nested = cx
+                .background_spawn(async move {
+                    let store = storage::open()?;
+                    let mut nested = HashMap::new();
+                    for (index, path) in folders {
+                        let summary = store
+                            .folder_summary(scan_id, &path)
+                            .map_err(io::Error::other)?;
+                        let mut entries = summary.entries;
+                        entries.truncate(NESTED_BLOCKS);
+                        nested.insert(index, entries);
+                    }
+                    Ok::<_, io::Error>(nested)
+                })
+                .await;
+            let _ = workspace.update(cx, |workspace, cx| {
+                let map = &mut workspace.space_map;
+                if map.folder != folder {
+                    return;
+                }
+                match nested {
+                    Ok(nested) => map.nested = nested,
+                    Err(error) => log::warn!("Could not total nested folders: {error}"),
+                }
+                cx.notify();
+            });
+        }));
     }
 
     /// Opens a folder entry, or shows a file entry in the inspector.
@@ -173,7 +239,7 @@ impl SpaceMap {
                             "space-map-block",
                             summary,
                             TREEMAP_WIDTH,
-                            TREEMAP_HEIGHT,
+                            Some(TREEMAP_HEIGHT),
                             cx,
                         ))
                         .child(self.inspector(scan, summary, cx)),
@@ -191,7 +257,7 @@ impl SpaceMap {
             "space-map-block",
             summary,
             TREEMAP_WIDTH,
-            TREEMAP_HEIGHT,
+            Some(TREEMAP_HEIGHT),
             cx,
         ))
         .child(self.inspector(scan, summary, cx))
@@ -206,9 +272,10 @@ impl SpaceMap {
         page.child(self.size_list(summary, cx))
     }
 
-    /// Amber Deck's footer: size by modified year, a strip of this folder's entries by size,
-    /// a small treemap, and a caption naming the selection.
-    pub(super) fn footer(&self, cx: &Context<Workspace>) -> Div {
+    /// Amber Deck's footer, after the design: a transport row (logical size up to and after
+    /// the selection, the cleanup queue, disk use), graphs that grow and shrink with the
+    /// footer when its divider is dragged, and a caption naming the selection.
+    pub(super) fn footer(&self, queue: (usize, u64), cx: &Context<Workspace>) -> Div {
         let theme = cx.theme();
         let summary = self
             .summary
@@ -233,57 +300,221 @@ impl SpaceMap {
             _ if self.scan.is_none() => "No scan open. Choose a folder to scan.".into(),
             _ => "Totalling folders…".into(),
         };
+        let label = |text: &'static str| {
+            div()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .text_ellipsis()
+                .child(text)
+        };
+        let separator = || div().w(px(1.0)).h(px(20.0)).bg(theme.border);
 
+        // Transport. With a file selected: this folder's entries played largest first up to
+        // it. Otherwise: how much of the whole scan the open folder holds.
+        let (played, total) = match (summary, self.selected) {
+            (Some(summary), Some(index)) => (
+                summary.entries[..=index]
+                    .iter()
+                    .map(|entry| entry.logical_bytes)
+                    .sum(),
+                summary.logical_bytes,
+            ),
+            (Some(summary), None) => (
+                summary.logical_bytes,
+                self.scan
+                    .as_ref()
+                    .map_or(summary.logical_bytes, |scan| scan.progress.logical_bytes),
+            ),
+            _ => (0, 0),
+        };
+        let position = fraction(played, total);
+        let progress = div()
+            .relative()
+            .flex_1()
+            .min_w(px(120.0))
+            .h(px(6.0))
+            .rounded(px(3.0))
+            .bg(theme.border)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .h_full()
+                    .w(relative(position))
+                    .bg(theme.primary),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(-4.0))
+                    .left(relative(position))
+                    .w(px(2.0))
+                    .h(px(14.0))
+                    .bg(theme.foreground),
+            );
+        let disk = self.disk.map(|disk| {
+            let used = 1.0 - fraction(disk.available_bytes, disk.capacity_bytes);
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(Icon::new(IconName::HardDrive).small())
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .h(px(4.0))
+                        .bg(theme.muted)
+                        .child(div().h_full().w(relative(used)).bg(theme.primary)),
+                )
+                .child(format!(
+                    "{:.0}% used · {} free",
+                    used * 100.0,
+                    format_bytes(disk.available_bytes)
+                ))
+        });
+        let transport = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(theme.border)
+            .text_xs()
+            .child(div().w(px(76.0)).child(format_bytes(played)))
+            .child(progress)
+            .child(
+                div()
+                    .w(px(76.0))
+                    .text_right()
+                    .child(format!("-{}", format_bytes(total.saturating_sub(played)))),
+            )
+            .child(separator())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .font_semibold()
+                    .text_color(theme.primary)
+                    .child(Icon::new(IconName::Inbox).small())
+                    .child(format!(
+                        "Queue · {} · {}",
+                        super::scan::count(queue.0 as u64, "item"),
+                        format_bytes(queue.1)
+                    )),
+            )
+            .children(disk.map(|disk| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(separator())
+                    .child(disk)
+            }));
+
+        // Size by last-modified year: bar heights are fractions of the graph area.
         let largest_year = self
             .years
             .iter()
             .map(|(_, bytes)| *bytes)
             .max()
             .unwrap_or(1);
-        let mut years = div().flex().items_end().gap_1().h(px(64.0));
-        for (year, bytes) in self.years.iter().rev().take(16).rev() {
-            years = years.child(
+        let shown_years = active_years(&self.years);
+        let mut year_bars = div().flex().items_end().gap_1().flex_1().min_h(px(0.0));
+        let mut year_labels = div().flex().gap_1();
+        for (year, bytes) in &shown_years {
+            year_bars = year_bars.child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_end()
                     .flex_1()
-                    .max_w(px(48.0))
-                    .h_full()
-                    .gap_1()
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(46.0 * fraction(*bytes, largest_year)).max(px(2.0)))
-                            .bg(theme.primary),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(year.to_string()),
-                    ),
+                    .max_w(px(44.0))
+                    .h(relative(fraction(*bytes, largest_year).max(0.03)))
+                    .bg(theme.primary),
+            );
+            year_labels = year_labels.child(
+                div()
+                    .flex_1()
+                    .max_w(px(44.0))
+                    .text_xs()
+                    .text_center()
+                    .text_color(theme.muted_foreground)
+                    .child(year.to_string()),
             );
         }
 
-        let mut strip = div().flex().items_end().gap(px(2.0)).h(px(64.0));
+        // File types in this folder.
+        let mut types = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_hidden();
+        if let Some(summary) = summary {
+            let largest = summary.types.first().map_or(1, |total| total.logical_bytes);
+            for total in summary.types.iter().take(6) {
+                types = types.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_xs()
+                        .child(
+                            div()
+                                .size(px(8.0))
+                                .flex_none()
+                                .bg(type_color(total.file_type)),
+                        )
+                        .child(div().w(px(96.0)).text_ellipsis().child(total.file_type))
+                        .child(
+                            div().flex_1().h(px(6.0)).bg(theme.muted).child(
+                                div()
+                                    .h_full()
+                                    .w(relative(fraction(total.logical_bytes, largest)))
+                                    .bg(type_color(total.file_type)),
+                            ),
+                        )
+                        .child(
+                            div()
+                                .w(px(64.0))
+                                .text_right()
+                                .text_color(theme.muted_foreground)
+                                .child(format_bytes(total.logical_bytes)),
+                        ),
+                );
+            }
+        }
+
+        // The design's waveform: entries by size, centred, played up to the selection.
+        let mut wave = div()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .flex_1()
+            .min_h(px(0.0));
         if let Some(summary) = summary {
             let largest = summary.entries[0].logical_bytes.max(1);
             for (index, entry) in summary.entries.iter().take(MAX_BLOCKS).enumerate() {
-                let selected = self.selected == Some(index);
-                strip = strip.child(
+                let played = self.selected.is_some_and(|selected| index <= selected);
+                wave = wave.child(
                     div()
                         .id(("space-map-strip", index))
                         .flex_1()
                         .min_w(px(3.0))
-                        .h(relative(fraction(entry.logical_bytes, largest).max(0.04)))
-                        .bg(if selected {
+                        .h(relative(fraction(entry.logical_bytes, largest).max(0.06)))
+                        .rounded(px(1.0))
+                        .bg(if self.selected == Some(index) {
                             theme.foreground
                         } else {
                             theme.primary
                         })
-                        .opacity(if entry.is_folder { 1.0 } else { 0.7 })
+                        .opacity(if played || self.selected.is_none() {
+                            1.0
+                        } else {
+                            0.4
+                        })
                         .cursor_pointer()
                         .on_click(cx.listener(move |workspace, _, _, cx| {
                             workspace.space_map.choose(index, cx);
@@ -292,11 +523,17 @@ impl SpaceMap {
             }
         }
 
-        let label = |text: &'static str| {
-            div()
-                .text_xs()
-                .text_color(theme.muted_foreground)
-                .child(text)
+        let column = |width: Option<f32>| {
+            let column = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .min_h(px(0.0))
+                .min_w(px(0.0));
+            match width {
+                Some(width) => column.w(px(width)).flex_shrink_0(),
+                None => column.flex_1(),
+            }
         };
         div()
             .flex()
@@ -306,45 +543,46 @@ impl SpaceMap {
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.title_bar)
+            .child(transport)
             .child(
                 div()
                     .flex()
-                    .items_end()
+                    .flex_1()
+                    .min_h(px(0.0))
                     .gap_4()
                     .px_3()
                     .py_2()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .w(px(300.0))
-                            .flex_shrink_0()
+                        column(Some(250.0))
                             .child(label("Size by last-modified year (UTC)"))
-                            .child(years),
+                            .child(year_bars)
+                            .child(year_labels),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .child(label("This folder's entries by size · click to open"))
-                            .child(strip),
+                        column(Some(240.0))
+                            .child(label("Types in this folder"))
+                            .child(types),
+                    )
+                    .child(
+                        column(None)
+                            .child(label(
+                                "Entries by size · played up to the selection · click to open",
+                            ))
+                            .child(wave),
                     )
                     .when_some(summary, |row, summary| {
                         row.child(
                             div()
-                                .w(px(160.0))
+                                .w(px(170.0))
+                                .h_full()
                                 .flex_shrink_0()
                                 .border_2()
                                 .border_color(theme.primary)
                                 .child(self.treemap(
                                     "space-map-mini-block",
                                     summary,
-                                    160.0,
-                                    80.0,
+                                    170.0,
+                                    None,
                                     cx,
                                 )),
                         )
@@ -353,12 +591,12 @@ impl SpaceMap {
             .child(
                 div()
                     .px_3()
-                    .py_2()
+                    .py_1()
                     .border_t_1()
                     .border_color(theme.border)
                     .text_sm()
                     .text_center()
-                    .line_clamp(2)
+                    .line_clamp(1)
                     .child(caption),
             )
     }
@@ -649,24 +887,30 @@ impl SpaceMap {
         id: &'static str,
         summary: &FolderSummary,
         width: f32,
-        height: f32,
+        fixed_height: Option<f32>,
         cx: &Context<Workspace>,
     ) -> impl IntoElement {
         let theme = cx.theme();
         let entries = &summary.entries[..summary.entries.len().min(MAX_BLOCKS)];
         let sizes: Vec<u64> = entries.iter().map(|entry| entry.logical_bytes).collect();
-        let mut map = div()
-            .relative()
-            .w_full()
-            .h(px(height))
+        // Without a fixed height the map fills its container; lay it out for a typical one.
+        let height = fixed_height.unwrap_or(width * 0.7);
+        let map = div().relative().w_full().bg(theme.muted).overflow_hidden();
+        let mut map = match fixed_height {
             // Keep its height inside a crowded column instead of shrinking away.
-            .flex_shrink_0()
-            .bg(theme.muted)
-            .overflow_hidden();
+            Some(height) => map.h(px(height)).flex_shrink_0(),
+            None => map.h_full(),
+        };
         for block in treemap(&sizes, width / height) {
             let entry = &entries[block.index];
             let index = block.index;
-            let labelled = block.width * width >= 70.0 && block.height * height >= 34.0;
+            let (block_width, block_height) = (block.width * width, block.height * height);
+            let label = BoxLabel::fits(block_width, block_height);
+            let nested = self
+                .nested
+                .get(&index)
+                .filter(|_| block_width >= 56.0 && block_height >= 72.0)
+                .map(|entries| nested_blocks(entries, block_width, block_height, label));
             map = map.child(
                 div()
                     .id((id, index))
@@ -689,16 +933,8 @@ impl SpaceMap {
                     .on_click(cx.listener(move |workspace, _, _, cx| {
                         workspace.space_map.choose(index, cx);
                     }))
-                    .when(labelled, |block| {
-                        block
-                            .child(
-                                div()
-                                    .font_semibold()
-                                    .text_ellipsis()
-                                    .child(entry_label(entry)),
-                            )
-                            .child(format_bytes(entry.logical_bytes))
-                    }),
+                    .child(label.render(entry, true))
+                    .children(nested),
             );
         }
         map
@@ -820,6 +1056,113 @@ impl SpaceMap {
     }
 }
 
+/// How much of an entry's name a treemap box can show, step by step as it gets smaller:
+/// name and size, then the name, then only its file-type icon, then nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoxLabel {
+    NameAndSize,
+    Name,
+    Icon,
+    Blank,
+}
+
+impl BoxLabel {
+    fn fits(width: f32, height: f32) -> Self {
+        if width >= 70.0 && height >= 34.0 {
+            Self::NameAndSize
+        } else if width >= 44.0 && height >= 18.0 {
+            Self::Name
+        } else if width >= 18.0 && height >= 18.0 {
+            Self::Icon
+        } else {
+            Self::Blank
+        }
+    }
+
+    /// Room the label takes at the top of its box.
+    fn height(self) -> f32 {
+        match self {
+            Self::NameAndSize => 44.0,
+            Self::Name => 24.0,
+            Self::Icon | Self::Blank => 3.0,
+        }
+    }
+
+    fn render(self, entry: &FolderEntry, bold: bool) -> gpui_kit::AnyElement {
+        let name = || {
+            div()
+                .text_ellipsis()
+                .when(bold, |name| name.font_semibold())
+                .child(entry_label(entry))
+        };
+        match self {
+            Self::NameAndSize => div()
+                .child(name())
+                .child(format_bytes(entry.logical_bytes))
+                .into_any_element(),
+            Self::Name => name().into_any_element(),
+            Self::Icon => img(crate::file_icons::icon_path(&entry.name, entry.is_folder))
+                .size(px(14.0))
+                .into_any_element(),
+            Self::Blank => div().into_any_element(),
+        }
+    }
+}
+
+/// A folder's own entries as sub-boxes inside its block, under its label. Each is shaded
+/// by size, the largest lightest, and labelled as far as its size allows.
+fn nested_blocks(
+    entries: &[FolderEntry],
+    width: f32,
+    height: f32,
+    label: BoxLabel,
+) -> impl IntoElement {
+    let top = label.height();
+    let (inner_width, inner_height) = (width - 6.0, (height - top - 3.0).max(1.0));
+    let sizes: Vec<u64> = entries.iter().map(|entry| entry.logical_bytes).collect();
+    let largest = sizes.iter().copied().max().unwrap_or(1).max(1);
+    let mut area = div()
+        .absolute()
+        .left(px(3.0))
+        .right(px(3.0))
+        .bottom(px(3.0))
+        .top(px(top));
+    for block in treemap(&sizes, inner_width / inner_height) {
+        let entry = &entries[block.index];
+        // Kept light enough that the label ink stays readable on either palette.
+        let shade = 0.3 * (1.0 - fraction(entry.logical_bytes, largest));
+        let label = BoxLabel::fits(block.width * inner_width, block.height * inner_height);
+        area = area.child(
+            div()
+                .absolute()
+                .left(relative(block.x))
+                .top(relative(block.y))
+                .w(relative(block.width))
+                .h(relative(block.height))
+                .p(px(2.0))
+                .overflow_hidden()
+                .bg(gpui_kit::hsla(0.0, 0.0, 0.0, shade))
+                .border_1()
+                .border_color(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
+                .child(label.render(entry, false)),
+        );
+    }
+    area
+}
+
+/// The years worth a bar: at least 2% of the busiest year's bytes, the latest ten of them,
+/// so a few stray old files don't stretch the graph across decades.
+fn active_years(years: &[(i32, u64)]) -> Vec<&(i32, u64)> {
+    let busiest = years.iter().map(|(_, bytes)| *bytes).max().unwrap_or(0);
+    let mut active: Vec<_> = years
+        .iter()
+        .filter(|(_, bytes)| *bytes * 50 >= busiest)
+        .collect();
+    let skip = active.len().saturating_sub(10);
+    active.drain(..skip);
+    active
+}
+
 fn entry_label(entry: &FolderEntry) -> String {
     entry.name.to_string_lossy().into_owned()
 }
@@ -918,6 +1261,24 @@ fn worst_ratio(row: &[(usize, f64)], side: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_labels_shrink_step_by_step_and_years_skip_stray_files() {
+        assert_eq!(BoxLabel::fits(120.0, 60.0), BoxLabel::NameAndSize);
+        assert_eq!(BoxLabel::fits(60.0, 20.0), BoxLabel::Name);
+        assert_eq!(BoxLabel::fits(24.0, 24.0), BoxLabel::Icon);
+        assert_eq!(BoxLabel::fits(10.0, 40.0), BoxLabel::Blank);
+        let mut years: Vec<(i32, u64)> = (2000..2026).map(|year| (year, 1_000)).collect();
+        years[0].1 = 10;
+        let active = active_years(&years);
+        assert_eq!(active.len(), 10);
+        assert_eq!(active.first().map(|(year, _)| *year), Some(2016));
+        assert!(
+            active_years(&[(1999, 1), (2024, 1_000)])
+                .iter()
+                .all(|(year, _)| *year == 2024)
+        );
+    }
 
     #[test]
     fn treemap_tiles_the_whole_map_without_overlap() {

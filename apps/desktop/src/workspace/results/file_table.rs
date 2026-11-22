@@ -15,7 +15,6 @@ use scan_engine::FileRecord;
 use scan_store::DuplicateEvidence;
 
 use super::super::scan::format_bytes;
-use super::SAMPLE_FILES;
 
 struct FileRow {
     name: SharedString,
@@ -43,20 +42,6 @@ pub(super) struct FileRows {
 }
 
 impl FileRows {
-    pub(super) fn samples() -> Self {
-        let files = SAMPLE_FILES
-            .iter()
-            .map(|file| FileRow {
-                icon: crate::file_icons::icon_path(std::ffi::OsStr::new(file.name), false),
-                name: file.name.into(),
-                search_path: format!("{}/{}", file.folder, file.name).to_ascii_lowercase(),
-                finding: file.finding,
-                size: file.size.into(),
-            })
-            .collect();
-        Self::with_query(files, "")
-    }
-
     pub(super) fn from_files(
         records: &[FileRecord],
         large_file_threshold: u64,
@@ -232,10 +217,25 @@ impl TableDelegate for FileRows {
 #[cfg(test)]
 mod tests {
     use super::FileRows;
+    use scan_engine::FileRecord;
 
     #[test]
     fn search_preserves_source_indices_and_matches_folders_case_insensitively() {
-        let mut rows = FileRows::samples();
+        let files: Vec<FileRecord> = [
+            "/Example/Archives/studio-backup.zip",
+            "/Example/Design/coast-export.png",
+            "/Example/Downloads/coast-export-copy.png",
+        ]
+        .into_iter()
+        .map(|path| FileRecord {
+            path: path.into(),
+            logical_bytes: 1,
+            created: None,
+            modified: None,
+            read_only: false,
+        })
+        .collect();
+        let mut rows = FileRows::from_files(&files, u64::MAX, "", None);
         rows.filter("DOWNLOADS");
         assert_eq!(rows.matches, [2]);
         assert_eq!(rows.cell_text(0, 0).as_ref(), "coast-export-copy.png");

@@ -1,5 +1,23 @@
 # Development progress
 
+## 2026-11-22 · Per-theme palettes, labelled boxes, theme picker, active years
+
+- **Palettes.** File-type colours now follow the theme: Amber Deck uses "Ember" (rust, ochre, sage, wine) with dark labels; Workbench uses "Slate jewel" (deeper blue, teal, plum) with light labels. `AppTheme::apply` records the active palette for `type_color` and `on_type_color`.
+- **Box labels step by step.** Treemap blocks and their sub-boxes show name and size, then only the name, then only the file-type icon, then nothing, as they get smaller (`BoxLabel::fits`). Sub-boxes now carry their entries' names; their size shading is lighter so labels stay readable on both palettes.
+- **Theme picker.** The two theme buttons are one small swatch button (the theme's background with an accent dot) that opens a menu of both themes with swatches and a check on the current one; it opens upward in the Workbench sidebar and from the right in the Amber Deck top bar. Not opened by hand yet.
+- **Footer transport bar.** Without a file selected it now shows how much of the scan the open folder holds (it stayed at 0 before, since opening a folder clears the selection), and its track uses the border colour so it is visible.
+- **Active years.** The footer's year graph shows only years holding at least 2% of the busiest year's bytes, the latest ten.
+
+Checks: fmt, Clippy (with and without `ui-smoke`), **115 tests** (new: box label steps and active years), UI smoke run with screenshot review of both themes, Windows lint.
+
+## 2026-11-22 · Footer stats, nested treemap, no sample results
+
+- **No sample results.** Scan Results starts empty with "No scan yet" instead of example files; the table test builds its own synthetic rows.
+- **Footer after the design.** A transport row shows logical size up to and after the selection with a cursor (entries play largest first), the cleanup queue's count and size, and the scan volume's disk use and free space (a live `volume_space` query on the scan root). Below it: size by modified year, a new types-in-this-folder chart, the design's centred waveform of entries (played up to the selection, the rest dimmed) and the mini treemap. Bar heights are fractions of the graph area, so the graphs grow and shrink as the footer divider is dragged; the footer now opens at 220 px (140–520). The queue loads at startup so the footer is right from the first frame.
+- **Nested treemap.** The 12 largest folders in view are totalled one level down in the background (one `folder_summary` each) and drawn as unnamed sub-boxes inside their block, shaded by size (largest lightest), under the block's name and size. Blocks smaller than 56×72 px stay plain. Opening another folder discards the pending totals.
+
+Checks: fmt, Clippy (with and without `ui-smoke`), 114 tests, UI smoke run with screenshot review of both themes, Windows lint. Not verified by hand: dragging the footer divider (the smoke run renders the default height only), and the nested-totals delay on a 1M-file scan (expected about 12 × 19 ms from the folder-totals benchmark).
+
 ## 2026-11-22 · Files row actions and details dialog
 
 Every saved-scan row in Files has a Details (ⓘ) and a Move to Trash button. Details opens a dialog with the inspector's facts (full path, size, type, dates, risk, cleanup and duplicate evidence) and its own Move to Trash; in Amber Deck clicking a row opens it too, replacing the stacked inspector. Workbench keeps the side inspector. The Trash and details dialogs share `trash::modal`. The table reloads its columns when the action column appears. The UI smoke test opens the details dialog, then Move to Trash from it, and saves `amber-deck-file-details.png`. Checks: fmt, Clippy (with and without `ui-smoke`), 114 tests, UI smoke run with screenshot review, Windows lint.

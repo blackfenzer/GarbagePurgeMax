@@ -75,9 +75,13 @@ pub(super) fn render(workspace: &Workspace, cx: &Context<Workspace>) -> Div {
                     )
                     .child(
                         resizable_panel()
-                            .size(px(170.0))
-                            .size_range(px(96.0)..px(480.0))
-                            .child(workspace.space_map.footer(cx)),
+                            .size(px(220.0))
+                            .size_range(px(140.0)..px(520.0))
+                            .child(
+                                workspace
+                                    .space_map
+                                    .footer(workspace.cleanup.queue_summary(), cx),
+                            ),
                     ),
             ),
         )

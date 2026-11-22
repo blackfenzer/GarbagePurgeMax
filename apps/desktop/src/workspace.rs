@@ -16,11 +16,11 @@ pub(crate) mod ui_smoke;
 
 use gpui_kit::base::StyledExt as _;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _,
-    button::Button,
+    ActiveTheme as _, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    menu::{DropdownMenu as _, PopupMenuItem},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem},
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div, px,
 };
@@ -127,6 +127,9 @@ impl Workspace {
         theme.apply(cx);
         let mut overview = overview::SavedOverview::default();
         overview.load(cx);
+        // The Amber Deck footer shows the queue from the start.
+        let mut cleanup = cleanup::Cleanup::default();
+        cleanup.load(0, cx);
         Self {
             space_map: space_map::SpaceMap::default(),
             theme,
@@ -140,7 +143,7 @@ impl Workspace {
             history: history::History::default(),
             overview,
             review: review::Review::default(),
-            cleanup: cleanup::Cleanup::default(),
+            cleanup,
             trash: None,
         }
     }
@@ -220,35 +223,53 @@ impl Workspace {
     }
 
     /// The theme choices, stacked in the sidebar or in a row in Amber Deck's top bar.
-    fn theme_buttons(&self, stacked: bool, cx: &Context<Self>) -> gpui_kit::Div {
-        let mut choices = if stacked {
-            div().flex().flex_col().gap_1().w_full()
+    /// A small swatch button for the current theme; clicking it opens a menu of themes.
+    /// `stacked` is the Workbench sidebar, where the menu opens upward.
+    fn theme_buttons(&self, stacked: bool, cx: &Context<Self>) -> impl IntoElement {
+        let workspace = cx.entity().downgrade();
+        let current = self.theme;
+        let anchor = if stacked {
+            gpui_kit::Anchor::BottomLeft
         } else {
-            div().flex().gap_1()
+            gpui_kit::Anchor::TopRight
         };
-        for theme in AppTheme::ALL {
-            choices = choices.child(
-                Button::new(theme.label())
-                    .small()
-                    .when(stacked, |button| button.w_full())
-                    .label(theme.label())
-                    .selected(self.theme == theme)
-                    .on_click(cx.listener(move |workspace, _, _, cx| {
-                        workspace.theme = theme;
-                        theme.apply(cx);
-                        cx.notify();
-                    })),
-            );
-        }
-        choices
+        Button::new("theme-picker")
+            .ghost()
+            .small()
+            .child(current.swatch(cx))
+            .tooltip(format!("Theme: {}", current.label()))
+            .dropdown_menu_with_anchor(anchor, move |mut menu, _, _| {
+                for theme in AppTheme::ALL {
+                    let workspace = workspace.clone();
+                    menu = menu.item(
+                        PopupMenuItem::element(move |_, cx| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(theme.swatch(cx))
+                                .child(theme.label())
+                        })
+                        .checked(theme == current)
+                        .on_click(move |_, _, cx| {
+                            let _ = workspace.update(cx, |workspace, cx| {
+                                workspace.theme = theme;
+                                theme.apply(cx);
+                                cx.notify();
+                            });
+                        }),
+                    );
+                }
+                menu
+            })
     }
 
     fn theme_switch(&self, cx: &Context<Self>) -> SidebarFooter {
         SidebarFooter::new().child(
             div()
                 .flex()
-                .flex_col()
-                .gap_1()
+                .items_center()
+                .justify_between()
                 .w_full()
                 .child(
                     div()
