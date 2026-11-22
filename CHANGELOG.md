@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 — development, 2026-11-22
+
+Everything since 0.3.0, grouped by date below: Move to Trash for any chosen file or folder (folders are previewed first and journaled like the queue), a redesigned Review, Files row Details and Trash buttons, the Space Map with a floating rounded treemap and nested folders, the Amber Deck theme with a stats footer, per-theme palettes, colour file icons, smart scan scope and background analysis. Unsigned development build: native Trash acceptance on macOS and the Windows build and runtime are still unverified.
+
 ## Footer stats and nested treemap — 2026-11-22
 
 - Treemap boxes are rounded and float on the page with soft shadows and a fixed colour gradient; a folder's sub-boxes float together in one rounded holder in the app background colour instead of having borders.
@@ -7,7 +11,7 @@
 - Treemap boxes label themselves as far as they fit: name and size, name, icon, then nothing; sub-boxes are named too.
 - The theme switch is a swatch button with a theme menu, the year graph shows only active years, and the footer's progress bar shows the open folder's share of the scan.
 - Amber Deck's footer adds a transport row (size up to and after the selection, cleanup queue, disk use) and a file-types chart; its graphs scale when the footer is resized.
-- Space Map treemap blocks for the largest folders show their contents as sub-boxes shaded by size.
+- Space Map treemap blocks for the largest folders show their contents as named sub-boxes.
 - Scan Results no longer shows sample files before the first scan.
 
 ## Move to Trash and Review redesign — 2026-11-22

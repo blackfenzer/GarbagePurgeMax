@@ -28,7 +28,7 @@ The macOS ZIP contains `Storage Clinic.app` with launch metadata and executable 
 To verify a ZIP without extracting or running it:
 
 ```sh
-python3 -B .github/scripts/verify_package.py target/packages/Storage-Clinic-0.3.0-macos-arm64.zip --target macos-arm64 --version 0.3.0
+python3 -B .github/scripts/verify_package.py target/packages/Storage-Clinic-0.4.0-macos-arm64.zip --target macos-arm64 --version 0.4.0
 ```
 
 On Windows substitute `python`, the Windows archive path, and `--target windows-x64`. Verification checks expected files, duplicate entries, regular-file types, streaming payload hashes, executable architecture, and macOS launch metadata/permissions. Checksums establish internal consistency, not publisher authenticity; someone able to replace both payload and manifest can regenerate them.

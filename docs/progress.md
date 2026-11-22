@@ -1,5 +1,9 @@
 # Development progress
 
+## 2026-11-22 · 0.4.0 development release
+
+Bumped the workspace to 0.4.0 and tagged `v0.4.0`. On macOS 27.2 (Apple Silicon, Rust 1.100.0): fmt, Clippy (with and without `ui-smoke`), **115 Rust tests**, the SQLite schema tests, the packaging tests, the UI smoke run and the Windows lint all passed. `target/packages/Storage-Clinic-0.4.0-macos-arm64.zip` was built with `.github/scripts/package.py` and passed `verify_package.py` for 0.4.0 / macos-arm64. It is unsigned and not notarized. No GitHub Release page was created (the `gh` CLI is not signed in here); CI uploads each push's package as an Actions artifact. Still open: native macOS Trash acceptance, including a non-empty folder; the Windows build, runtime and package; and opening the theme menu by hand.
+
 ## 2026-11-22 · Treemap shadows and gradients
 
 Follow-up: boxes are rounder (12 px, sub-boxes 8 px) and float with a softer, deeper shadow; the map and its gaps use the app background colour. A folder's sub-boxes sit together in one rounded holder in the app background colour with 3 px of space inside its edge and 1.5 px around each sub-box (1.5 px gutters between top-level boxes). Corner radii shrink to a third of a box's shorter side, so small boxes stay boxes instead of pills or dots; boxes under 3 px are left out, and a holder is skipped when its contents would have less than 40×24 px. Names are bold in full ink and sizes are the same ink dimmed, like provinces on a map, instead of a ring around each child.

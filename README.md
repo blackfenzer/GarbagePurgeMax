@@ -30,7 +30,7 @@ Open **Review** to compare groups from the scan open in Scan Results. **Exact du
 
 **v0.3 cleanup and recovery:** In Exact duplicates, select **Keep this copy**, then add unwanted copies to **Cleanup Queue**. Eligible metadata candidates and empty folders also have queue actions. Review every path and consequence, then use **Review confirmation → Confirm move to Trash / Recycle Bin**. Protected locations, hard-linked files, detected cloud placeholders and current exclusions are blocked. Every item is revalidated immediately before action; scans never remove files. **Recovery History** records each outcome and supports confirmed restore without overwriting existing paths. Interrupted actions require inspection and are never retried automatically. The app never empties Trash. See [cleanup and recovery](docs/cleanup-recovery.md).
 
-This is a **0.3.0 development build**, with native acceptance still pending: macOS native Trash testing was blocked by permissions here; Windows compilation/runtime and the current GUI flow remain unverified. Use disposable fixtures for your first native test.
+This is a **0.4.0 development build**, with native acceptance still pending: macOS native Trash testing was blocked by permissions here; Windows compilation/runtime and the current GUI flow remain unverified. Use disposable fixtures for your first native test.
 
 Use **Scan exclusions** on Overview to select files or folders to skip in future scans. After indexing, Storage Clinic checks same-size files for exact duplicates. Use **Duplicates only** in Scan Results to review matches and see their SHA-256 hashes in File Inspector. Reopen older scans for their indexed files, or run a new scan to add duplicate findings.
 
