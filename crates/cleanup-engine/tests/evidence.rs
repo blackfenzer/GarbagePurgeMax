@@ -52,7 +52,11 @@ fn directories_must_stay_empty_and_paths_must_be_absolute() -> io::Result<()> {
     fs::write(directory.join(".hidden"), b"keep")?;
     assert!(revalidate(&directory, &proof, None, &cancel).is_err());
     assert!(validate_ancestors(std::path::Path::new("relative")).is_err());
-    assert!(validate_ancestors(&directory.join("../empty")).is_err());
+    // Built as text: `Path::join` resolves `..` inside Windows verbatim (`\\?\`) paths,
+    // which would leave no traversal to reject.
+    let mut traversal = directory.clone().into_os_string();
+    traversal.push(format!("{0}..{0}empty", std::path::MAIN_SEPARATOR));
+    assert!(validate_ancestors(std::path::Path::new(&traversal)).is_err());
     Ok(())
 }
 
