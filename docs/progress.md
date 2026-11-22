@@ -1,5 +1,9 @@
 # Development progress
 
+## 2026-11-22 · Files row actions and details dialog
+
+Every saved-scan row in Files has a Details (ⓘ) and a Move to Trash button. Details opens a dialog with the inspector's facts (full path, size, type, dates, risk, cleanup and duplicate evidence) and its own Move to Trash; in Amber Deck clicking a row opens it too, replacing the stacked inspector. Workbench keeps the side inspector. The Trash and details dialogs share `trash::modal`. The table reloads its columns when the action column appears. The UI smoke test opens the details dialog, then Move to Trash from it, and saves `amber-deck-file-details.png`. Checks: fmt, Clippy (with and without `ui-smoke`), 114 tests, UI smoke run with screenshot review, Windows lint.
+
 ## 2026-11-22 · Move to Trash from Files, Tree and Map; Review redesign
 
 - **Move to Trash anywhere.** Files has a Move to Trash button for the selected file; every Tree row has a trash icon; the Map inspector has a button for the selected entry or open folder (never the scan root). Each opens one dialog in both themes. The item is inspected first (`cleanup::job::prepare_chosen`); a folder shows its size, file and folder counts, its eight largest files and any links or read-only items inside. Confirming records the item in the cleanup journal and moves only it (`execute_chosen`, `CleanupSession::claim_one`), leaving anything already queued for its own confirmation. It then appears in Recovery History with the usual restore.

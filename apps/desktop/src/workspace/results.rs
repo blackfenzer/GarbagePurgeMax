@@ -10,16 +10,16 @@ use std::time::{Duration, SystemTime};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IndexPath, Selectable as _, Sizable as _,
-    button::Button,
+    button::{Button, ButtonVariants as _},
     input::{Input, InputEvent, InputState},
     searchable_list::SearchableVec,
     select::{Select, SelectEvent, SelectState},
-    table::{DataTable, TableEvent, TableState},
+    table::{DataTable, TableDelegate as _, TableEvent, TableState},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _, Subscription,
-    Window, div, px,
+    AnyElement, App, AppContext as _, Context, Div, Entity, ParentElement as _, Styled as _,
+    Subscription, WeakEntity, Window, div, px,
 };
 
 use super::Workspace;
@@ -45,6 +45,7 @@ const SORT_OPTIONS: [(&str, FileSort); 5] = [
 
 use super::scan::{LARGE_FILE_BYTES, ScanReport, format_bytes};
 use file_table::FileRows;
+pub(super) use file_table::RowAction;
 use saved::{PAGE_SIZE, SavedResults};
 
 struct SampleFile {
@@ -87,6 +88,10 @@ pub(super) struct Results {
     age_filter: Entity<Options>,
     sort_order: Entity<Options>,
     exporting: bool,
+    /// The saved file shown in the details dialog, by position in `saved.files`.
+    detail: Option<usize>,
+    /// Lets the table's row buttons reach the workspace.
+    workspace: WeakEntity<Workspace>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -117,7 +122,14 @@ impl Results {
                 cx.notify();
             }
         });
-        let selection = cx.subscribe(&table, |_, _, event: &TableEvent, cx| {
+        let selection = cx.subscribe(&table, |workspace, table, event: &TableEvent, cx| {
+            // Amber Deck has no room for the inspector, so a click opens the details dialog.
+            if let TableEvent::SelectRow(row) = event
+                && workspace.theme == super::theme::AppTheme::AmberDeck
+                && workspace.results.saved.is_some()
+            {
+                workspace.results.detail = table.read(cx).delegate().source_index(*row);
+            }
             if matches!(event, TableEvent::SelectRow(_) | TableEvent::ClearSelection) {
                 cx.notify();
             }
@@ -161,6 +173,8 @@ impl Results {
             age_filter,
             sort_order,
             exporting: false,
+            detail: None,
+            workspace: cx.entity().downgrade(),
             _subscriptions: subscriptions,
         }
     }
@@ -216,9 +230,24 @@ impl Results {
         self.replace_rows(rows, cx);
     }
 
-    fn replace_rows(&self, rows: FileRows, cx: &mut Context<Workspace>) {
+    fn replace_rows(&mut self, rows: FileRows, cx: &mut Context<Workspace>) {
+        self.detail = None;
+        let rows = if self.saved.is_some() {
+            let workspace = self.workspace.clone();
+            rows.with_actions(std::rc::Rc::new(move |action, index, _, cx| {
+                let _ =
+                    workspace.update(cx, |workspace, cx| workspace.file_action(action, index, cx));
+            }))
+        } else {
+            rows
+        };
         self.table.update(cx, |table, cx| {
+            let columns = table.delegate().columns_count(cx);
             *table.delegate_mut() = rows;
+            // The table caches its columns; reload them when the action column comes or goes.
+            if table.delegate().columns_count(cx) != columns {
+                table.refresh(cx);
+            }
             table.clear_selection(cx);
             if table.delegate().counts().0 > 0 {
                 table.scroll_to_row(0, cx);
@@ -560,7 +589,77 @@ impl Results {
                     }))
                     .children(pagination),
             )
-            .child(inspector::render(detail, stacked, cx))
+            // Stacked, the details dialog takes the inspector's place.
+            .when(!stacked, |page| page.child(inspector::render(detail, cx)))
+    }
+
+    /// The saved file at `index` and its scan, for Move to Trash.
+    fn saved_file(&self, index: usize) -> Option<(scan_store::SavedScan, std::path::PathBuf)> {
+        let saved = self.saved.as_ref()?;
+        Some((saved.scan.clone(), saved.files.get(index)?.path.clone()))
+    }
+
+    /// The details dialog for the file picked in the table, or nothing.
+    pub(super) fn detail_modal(&self, cx: &Context<Workspace>) -> Option<AnyElement> {
+        let index = self.detail?;
+        let saved = self.saved.as_ref()?;
+        let file = saved.files.get(index)?;
+        let close = Button::new("file-detail-close")
+            .outline()
+            .label("Close")
+            .on_click(cx.listener(|workspace, _, _, cx| {
+                workspace.results.detail = None;
+                cx.notify();
+            }));
+        let trash = Button::new("file-detail-trash")
+            .danger()
+            .icon(Icon::new(IconName::Trash))
+            .label("Move to Trash")
+            .on_click(cx.listener(move |workspace, _, _, cx| {
+                workspace.file_action(RowAction::Trash, index, cx)
+            }));
+        Some(super::trash::modal(
+            "file-detail",
+            IconName::Info,
+            "File details",
+            div()
+                .flex()
+                .flex_col()
+                .gap_4()
+                .child(inspector::scanned_file(
+                    file,
+                    saved.scan.large_file_threshold,
+                    saved.evidence.get(&file.path),
+                    saved.scan.started_at().ok(),
+                    cx,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_end()
+                        .gap_2()
+                        .child(close)
+                        .child(trash),
+                ),
+            cx,
+        ))
+    }
+}
+
+impl Workspace {
+    /// A Files row button: show the file's details, or start Move to Trash.
+    pub(super) fn file_action(&mut self, action: RowAction, index: usize, cx: &mut Context<Self>) {
+        match action {
+            RowAction::Inspect => self.results.detail = Some(index),
+            RowAction::Trash => {
+                self.results.detail = None;
+                if let Some((scan, path)) = self.results.saved_file(index) {
+                    self.ask_trash(scan, path, cx);
+                }
+            }
+        }
+        cx.notify();
     }
 }
 

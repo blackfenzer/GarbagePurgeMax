@@ -198,6 +198,42 @@ pub(crate) fn run(shots: &Path) -> Result<(), Box<dyn Error>> {
         cx.notify();
     })?;
 
+    // A Files row's Details button opens the details dialog over Amber Deck.
+    window.update(&mut cx, |workspace, _, cx| {
+        workspace.show_page(Page::Results);
+        workspace.load_page(Page::Results, cx);
+    })?;
+    settle(&mut cx);
+    let shown = window.update(&mut cx, |workspace, _, cx| {
+        workspace.file_action(super::results::RowAction::Inspect, 0, cx);
+        workspace.results.detail_modal(cx).is_some()
+    })?;
+    ensure(shown, "the Details button opens the file details dialog")?;
+    settle(&mut cx);
+    capture(
+        &mut cx,
+        window.into(),
+        &shots.join("amber-deck-file-details.png"),
+    )?;
+    window.update(&mut cx, |workspace, _, cx| {
+        workspace.file_action(super::results::RowAction::Trash, 0, cx);
+    })?;
+    settle(&mut cx);
+    let trash = window.update(&mut cx, |workspace, _, cx| {
+        (
+            workspace.results.detail_modal(cx).is_some(),
+            workspace.trash_preview(),
+        )
+    })?;
+    ensure(
+        !trash.0 && trash.1 == Ok(None),
+        &format!("Move to Trash from Files previews a file: {trash:?}"),
+    )?;
+    window.update(&mut cx, |workspace, _, cx| {
+        workspace.trash = None;
+        cx.notify();
+    })?;
+
     // Review's other tabs, in both themes.
     for theme in AppTheme::ALL {
         for (kind, name) in [

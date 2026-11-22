@@ -135,7 +135,7 @@ pub(super) fn scanned_file(
     content
 }
 
-pub(super) fn render(content: Option<Div>, stacked: bool, cx: &Context<Workspace>) -> Div {
+pub(super) fn render(content: Option<Div>, cx: &Context<Workspace>) -> Div {
     let content = content.unwrap_or_else(|| {
         div()
             .text_sm()
@@ -143,26 +143,24 @@ pub(super) fn render(content: Option<Div>, stacked: bool, cx: &Context<Workspace
             .child("Select a file to inspect its details.")
     });
 
-    let panel = div()
+    div()
         .flex()
         .flex_col()
         .flex_shrink_0()
         .gap_4()
         .p_5()
         .border_color(cx.theme().border)
-        .child(div().font_semibold().child("File Inspector"));
-    if stacked {
-        // Under the table: full width, and the panel around it scrolls.
-        return panel.w_full().border_t_1().child(content);
-    }
-    panel.w(px(246.0)).border_l_1().child(
-        div()
-            .id("file-inspector")
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .child(content),
-    )
+        .child(div().font_semibold().child("File Inspector"))
+        .w(px(246.0))
+        .border_l_1()
+        .child(
+            div()
+                .id("file-inspector")
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .child(content),
+        )
 }
 
 fn timestamp(time: Option<SystemTime>) -> String {

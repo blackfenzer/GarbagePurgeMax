@@ -65,7 +65,11 @@ impl Render for Workspace {
             .relative()
             .size_full()
             .child(layout)
-            .children(self.trash_overlay(cx))
+            // At most one dialog: Move to Trash, else a file's details.
+            .children(
+                self.trash_overlay(cx)
+                    .or_else(|| self.results.detail_modal(cx)),
+            )
     }
 }
 

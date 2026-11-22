@@ -16,8 +16,8 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, Task, div, hsla, px,
+    AnyElement, App, AppContext as _, Context, InteractiveElement as _, IntoElement,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, Task, div, hsla, px,
 };
 use scan_engine::assess_risk;
 use scan_store::{QueueEntry, SavedScan};
@@ -343,74 +343,93 @@ impl Workspace {
 
         let is_folder =
             matches!(&prompt.stage, Stage::Ready { entry, .. } if entry.proof.directory);
-        let card = div()
-            .id("trash-dialog")
+        let item = div()
             .flex()
-            .flex_col()
-            .gap_3()
-            .w(px(560.0))
-            .max_w(gpui_kit::relative(0.92))
-            .max_h(gpui_kit::relative(0.85))
-            .p_5()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.popover)
-            .text_color(theme.popover_foreground)
-            .overflow_y_scroll()
+            .items_start()
+            .gap_2()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_lg()
-                    .font_semibold()
-                    .child(Icon::new(IconName::Trash).text_color(theme.primary))
-                    .child("Move to Trash?"),
+                gpui_kit::img(crate::file_icons::icon_path(
+                    prompt.path.file_name().unwrap_or(prompt.path.as_os_str()),
+                    is_folder,
+                ))
+                .size(px(20.0))
+                .flex_none(),
             )
             .child(
                 div()
                     .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        gpui_kit::img(crate::file_icons::icon_path(
-                            prompt.path.file_name().unwrap_or(prompt.path.as_os_str()),
-                            is_folder,
-                        ))
-                        .size(px(20.0))
-                        .flex_none(),
-                    )
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(div().font_semibold().child(name))
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .child(div().font_semibold().child(name))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child(prompt.path.display().to_string()),
-                            ),
+                            .text_xs()
+                            .text_color(muted)
+                            .child(prompt.path.display().to_string()),
                     ),
-            )
-            .child(body)
-            .child(actions);
-
-        Some(
+            );
+        Some(modal(
+            "trash-dialog",
+            IconName::Trash,
+            "Move to Trash?",
             div()
-                .id("trash-backdrop")
-                .absolute()
-                .inset_0()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(item)
+                .child(body)
+                .child(actions),
+            cx,
+        ))
+    }
+}
+
+/// A dialog over the whole window: a titled card on a dimmed backdrop that blocks clicks
+/// to the page underneath. Both layouts draw it the same way.
+pub(super) fn modal(
+    id: &'static str,
+    icon: IconName,
+    title: &'static str,
+    content: impl IntoElement,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let card = div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap_3()
+        .w(px(560.0))
+        .max_w(gpui_kit::relative(0.92))
+        .max_h(gpui_kit::relative(0.85))
+        .p_5()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.popover)
+        .text_color(theme.popover_foreground)
+        .overflow_y_scroll()
+        .child(
+            div()
                 .flex()
                 .items_center()
-                .justify_center()
-                .bg(hsla(0.0, 0.0, 0.0, 0.6))
-                .occlude()
-                .child(card)
-                .into_any_element(),
+                .gap_2()
+                .text_lg()
+                .font_semibold()
+                .child(Icon::new(icon).text_color(theme.primary))
+                .child(title),
         )
-    }
+        .child(content);
+    div()
+        .id("modal-backdrop")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(hsla(0.0, 0.0, 0.0, 0.6))
+        .occlude()
+        .child(card)
+        .into_any_element()
 }

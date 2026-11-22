@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _,
+    ActiveTheme as _, Icon, Sizable as _,
+    button::{Button, ButtonVariants as _},
     table::{Column, TableDelegate, TableState},
 };
 use gpui_kit::{
@@ -23,9 +26,20 @@ struct FileRow {
     size: SharedString,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::workspace) enum RowAction {
+    Inspect,
+    Trash,
+}
+
+/// Runs a row button's action for the file at a source index.
+pub(super) type RowActions = Rc<dyn Fn(RowAction, usize, &mut Window, &mut App)>;
+
 pub(super) struct FileRows {
     files: Vec<FileRow>,
     matches: Vec<usize>,
+    /// Saved scans get Details and Move to Trash buttons in a last column.
+    actions: Option<RowActions>,
 }
 
 impl FileRows {
@@ -73,6 +87,11 @@ impl FileRows {
         Self::with_query(files, query)
     }
 
+    pub(super) fn with_actions(mut self, actions: RowActions) -> Self {
+        self.actions = Some(actions);
+        self
+    }
+
     pub(super) fn counts(&self) -> (usize, usize) {
         (self.matches.len(), self.files.len())
     }
@@ -85,6 +104,7 @@ impl FileRows {
         let mut rows = Self {
             files,
             matches: Vec::new(),
+            actions: None,
         };
         rows.filter(query);
         rows
@@ -107,14 +127,14 @@ impl FileRows {
             0 => file.name.clone(),
             1 => file.finding.into(),
             2 => file.size.clone(),
-            _ => unreachable!("unexpected file table column"),
+            _ => SharedString::default(),
         }
     }
 }
 
 impl TableDelegate for FileRows {
     fn columns_count(&self, _: &App) -> usize {
-        3
+        if self.actions.is_some() { 4 } else { 3 }
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -126,6 +146,7 @@ impl TableDelegate for FileRows {
             0 => Column::new("file", "File").width(px(215.)),
             1 => Column::new("finding", "Finding").width(px(108.)),
             2 => Column::new("size", "Size").width(px(82.)).text_right(),
+            3 => Column::new("actions", "").width(px(76.)),
             _ => unreachable!("unexpected file table column"),
         }
     }
@@ -137,6 +158,37 @@ impl TableDelegate for FileRows {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        if column == 3
+            && let (Some(actions), Some(&source)) = (&self.actions, self.matches.get(row))
+        {
+            let button = |action: RowAction, icon: IconName, tooltip: &'static str| {
+                let actions = Rc::clone(actions);
+                Button::new((
+                    if action == RowAction::Trash {
+                        "file-row-trash"
+                    } else {
+                        "file-row-inspect"
+                    },
+                    row,
+                ))
+                .ghost()
+                .xsmall()
+                .icon(Icon::new(icon))
+                .tooltip(tooltip)
+                .on_click(move |_, window, cx| {
+                    // Keep the click from also selecting the row underneath.
+                    cx.stop_propagation();
+                    actions(action, source, window, cx);
+                })
+            };
+            return div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(button(RowAction::Inspect, IconName::Info, "Details"))
+                .child(button(RowAction::Trash, IconName::Trash, "Move to Trash"))
+                .into_any_element();
+        }
         let icon = (column == 0)
             .then(|| self.matches.get(row).map(|&index| self.files[index].icon))
             .flatten();
@@ -152,6 +204,7 @@ impl TableDelegate for FileRows {
                     .text_ellipsis()
                     .child(self.cell_text(row, column)),
             )
+            .into_any_element()
     }
 
     fn cell_label(&self, row: usize, column: usize, _: &App) -> Option<SharedString> {
