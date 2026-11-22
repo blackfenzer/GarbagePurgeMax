@@ -676,10 +676,11 @@ mod tests {
         let mut writer = store.begin_scan(fixture.path(), 100)?;
         let cutoff =
             SystemTime::UNIX_EPOCH - Duration::from_millis(1) - Duration::from_secs(30 * 86400);
+        // Windows clocks tick every 100 ns, so smaller steps would round to the same time.
         for (name, modified) in [
-            ("older", cutoff - Duration::from_nanos(1)),
+            ("older", cutoff - Duration::from_nanos(100)),
             ("boundary", cutoff),
-            ("newer", cutoff + Duration::from_nanos(1)),
+            ("newer", cutoff + Duration::from_nanos(100)),
         ] {
             writer.insert_file(&FileRecord {
                 path: fixture.path().join(name),
